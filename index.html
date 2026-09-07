@@ -209,15 +209,60 @@
     .sente { color: #111111; }
     #status-box {
       margin-top: 4px;
-      padding: 6px 10px;
+      padding: 5px 8px;
       width: 100%;
       background-color: #2b2d42;
       border-radius: 6px;
       text-align: center;
-      font-size: 0.82rem;
-      min-height: 20px;
+      font-size: 0.78rem;
+      min-height: 18px;
       box-sizing: border-box;
     }
+    /* AIコーチ解説カード */
+    #coach-card {
+      width: 100%;
+      background: #232738;
+      border: 1px solid #3b4252;
+      border-left: 4px solid #38d9a9;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-top: 5px;
+      box-sizing: border-box;
+      font-size: 0.76rem;
+      line-height: 1.45;
+    }
+    .coach-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: bold;
+      color: #38d9a9;
+      margin-bottom: 4px;
+      font-size: 0.78rem;
+    }
+    .coach-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+    }
+    .badge-good { background: #2b8a3e; color: #fff; }
+    .badge-ok { background: #1971c2; color: #fff; }
+    .badge-warn { background: #d97706; color: #fff; }
+    .badge-bad { background: #c92a2a; color: #fff; }
+    .coach-body {
+      color: #eceff4;
+    }
+    .coach-pv {
+      margin-top: 4px;
+      color: #a0aec0;
+      font-size: 0.72rem;
+      background: #1a1d27;
+      padding: 3px 6px;
+      border-radius: 4px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    /* モーダル */
     .modal-overlay {
       display: none;
       position: absolute;
@@ -268,7 +313,7 @@
   <div id="app-container">
     <h1>将棋ステップコーチ</h1>
 
-    <!-- エンジン稼働ステータスバー -->
+    <!-- エンジンステータス -->
     <div class="engine-status-bar">
       <div>
         <span id="engine-indicator" class="status-badge"></span>
@@ -330,6 +375,20 @@
 
     <div id="status-box">対局開始。あなたの手番です</div>
 
+    <!-- AIコーチ解説カード -->
+    <div id="coach-card">
+      <div class="coach-header">
+        <span>💡 AIコーチの解説</span>
+        <span id="coach-badge" class="coach-badge badge-ok">準備完了</span>
+      </div>
+      <div id="coach-body" class="coach-body">
+        対局を始めると、あなたが指した手とAI最善手の解説がここに表示されます。
+      </div>
+      <div id="coach-pv" class="coach-pv" style="display: none;">
+        読み筋: -
+      </div>
+    </div>
+
     <!-- 悪手ブレーキモーダル -->
     <div id="brake-modal" class="modal-overlay">
       <h2 class="modal-title" style="color: #c92a2a;">⚠️ 悪手ブレーキ作動！</h2>
@@ -390,6 +449,7 @@
     let isEngineReady = false;
     let currentEngineResolve = null;
     let currentEvalScore = 0;
+    let currentBestPv = [];
 
     function initFairyStockfish() {
       try {
@@ -437,6 +497,7 @@
         document.getElementById('engine-label').textContent = 'Fairy-Stockfish: 稼働中';
       }
 
+      // 評価値と読み筋（PV）のパース
       if (line.startsWith('info') && line.includes('score cp')) {
         const parts = line.split(/\s+/);
         const cpIdx = parts.indexOf('cp');
@@ -445,32 +506,37 @@
           currentEvalScore = (turn === 0) ? cpVal : -cpVal;
           document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
         }
+        const pvIdx = parts.indexOf('pv');
+        if (pvIdx !== -1) {
+          currentBestPv = parts.slice(pvIdx + 1);
+        }
       }
 
       if (line.startsWith('bestmove')) {
         const parts = line.split(/\s+/);
         const bestMoveStr = parts[1];
         if (currentEngineResolve) {
-          currentEngineResolve({ bestMove: bestMoveStr, score: currentEvalScore });
+          currentEngineResolve({ bestMove: bestMoveStr, score: currentEvalScore, pv: currentBestPv });
           currentEngineResolve = null;
         }
       }
     }
 
-    function evaluateWithEngine(moves, timeMs = 350) {
+    function evaluateWithEngine(moves, timeMs = 1000) {
       return new Promise((resolve) => {
         if (!isEngineReady) {
-          resolve({ bestMove: null, score: 0 });
+          resolve({ bestMove: null, score: 0, pv: [] });
           return;
         }
         currentEngineResolve = resolve;
+        currentBestPv = [];
         const movesCmd = moves.length > 0 ? ` moves ${moves.join(' ')}` : '';
         sendToEngine(`position startpos${movesCmd}`);
         sendToEngine(`go movetime ${timeMs}`);
 
         setTimeout(() => {
           if (currentEngineResolve) {
-            currentEngineResolve({ bestMove: null, score: currentEvalScore });
+            currentEngineResolve({ bestMove: null, score: currentEvalScore, pv: currentBestPv });
             currentEngineResolve = null;
           }
         }, timeMs + 300);
@@ -507,8 +573,16 @@
       document.getElementById('brake-modal').style.display = 'none';
       document.getElementById('promote-modal').style.display = 'none';
       document.getElementById('eval-display').textContent = '評価値: 0';
+      resetCoachCard();
       buildBoardDOM();
       updateDisplay();
+    }
+
+    function resetCoachCard() {
+      document.getElementById('coach-badge').className = 'coach-badge badge-ok';
+      document.getElementById('coach-badge').textContent = '対局開始';
+      document.getElementById('coach-body').textContent = '対局を始めると、あなたが指した手とAI最善手の解説がここに表示されます。';
+      document.getElementById('coach-pv').style.display = 'none';
     }
 
     function confirmReset() {
@@ -667,6 +741,7 @@
       }
     }
 
+    // USI文字列と将棋表記の相互変換
     function moveToUsi(move, promote) {
       const files = ['9','8','7','6','5','4','3','2','1'];
       const ranks = ['a','b','c','d','e','f','g','h','i'];
@@ -704,24 +779,81 @@
       }
     }
 
+    // USI文字列（例: "7g7f"）を「▲7六歩」形式の日本語棋譜に変換
+    function formatUsiToJapanese(usi, currentBoard, isSente = true) {
+      if (!usi || usi === '(none)') return '特になし';
+      const m = usiToMove(usi);
+      if (!m) return usi;
+
+      const fileKanji = ['９','８','７','６','５','４','３','２','１'];
+      const rankKanji = ['一','二','三','四','五','六','七','八','九'];
+      const mark = isSente ? '▲' : '△';
+
+      let pieceKanji = '';
+      if (m.drop) {
+        pieceKanji = KANJI[m.drop];
+        return `${mark}${fileKanji[m.toC]}${rankKanji[m.toR]}${pieceKanji}打`;
+      } else {
+        const origPiece = currentBoard[m.from.r][m.from.c];
+        pieceKanji = origPiece ? KANJI[origPiece.type] : '';
+        const promStr = m.promote ? '成' : '';
+        return `${mark}${fileKanji[m.toC]}${rankKanji[m.toR]}${pieceKanji}${promStr}`;
+      }
+    }
+
+    // 手の意図・狙いを自動解説するジェネレーター
+    function generateMoveExplanation(move, bestMoveUsi, loss, preBoard) {
+      const movedPiece = move.drop ? { type: move.drop } : preBoard[move.from.r][move.from.c];
+      const targetPiece = preBoard[move.toR][move.toC];
+      const pName = movedPiece ? KANJI[movedPiece.type] : '駒';
+
+      let explanation = '';
+
+      if (targetPiece) {
+        explanation = `相手の ${KANJI[targetPiece.type]} を召し捕り、戦力差を拡大する手です。`;
+      } else if (move.promote) {
+        explanation = `敵陣を突破して ${pName} を成ることで、攻撃力を大幅に高めました。`;
+      } else if (movedPiece && (movedPiece.type === 'KI' || movedPiece.type === 'GI') && move.toR >= 6) {
+        explanation = `金銀を玉に寄せて守りの陣形（囲い）を固める手です。`;
+      } else if (movedPiece && (movedPiece.type === 'HI' || movedPiece.type === 'KA')) {
+        explanation = `大駒の射程を盤面全体に通し、主導権を握りに行く手です。`;
+      } else if (move.drop) {
+        explanation = `持ち駒の ${pName} を要所に打ち込み、前線を補強する手です。`;
+      } else {
+        explanation = `歩を進めて前線を押し上げ、攻めの足がかりを築く自然な一手です。`;
+      }
+
+      return explanation;
+    }
+
+    // ==========================================
+    // プレイヤー着手処理 ＆ AIコーチ深層解説
+    // ==========================================
     async function processPlayerMove(move, promote) {
       isCpuBusy = true;
-      document.getElementById('status-box').textContent = 'Fairy-Stockfish が局面を解析中...';
+      document.getElementById('status-box').textContent = 'Fairy-Stockfish が深層解析中（約1秒）...';
 
       const assistLevel = document.getElementById('assist-level').value;
       const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
 
-      const preAnalysis = await evaluateWithEngine(usiHistory, 300);
+      // 1. 直前局面におけるAIの最善手と評価値（1000ms探索）
+      const preAnalysis = await evaluateWithEngine(usiHistory, 900);
       const preScore = preAnalysis.score;
+      const recommendedUsi = preAnalysis.bestMove;
+      const enginePv = preAnalysis.pv;
 
+      // プレイヤーの手をUSI化
       const playerUsi = moveToUsi(move, promote);
       const candidateUsiHistory = [...usiHistory, playerUsi];
 
-      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 350);
+      // 2. 指した後の局面における相手の最善反撃手と評価値（1000ms探索）
+      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 1000);
       const postScore = postAnalysis.score;
 
+      // 評価値の落差（先手視点での損失）
       const loss = preScore - postScore;
 
+      // 悪手ブレーキ判定
       if (assistLevel !== 'off' && isEngineReady && loss >= threshold) {
         const killerMove = usiToMove(postAnalysis.bestMove);
         pendingPunish = killerMove;
@@ -735,9 +867,26 @@
         document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
         document.getElementById('brake-msg').textContent = `【${levelNames[assistLevel]}基準】その手を指すとエンジンに厳しい反撃を突かれ、形勢を損ねてしまいます。`;
         document.getElementById('brake-modal').style.display = 'block';
+
+        // コーチカードも悪手警告に更新
+        updateCoachCard('badge-bad', '⚠️ 悪手警告', `評価値が ${Math.round(loss)}点 急落しました。最善手は ${formatUsiToJapanese(recommendedUsi, board, true)} でした。`, enginePv);
         return;
       }
 
+      // 3. 一手ごとのAIコーチ解説を生成
+      const moveExp = generateMoveExplanation(move, recommendedUsi, loss, board);
+      const playerJp = formatUsiToJapanese(playerUsi, board, true);
+      const bestJp = formatUsiToJapanese(recommendedUsi, board, true);
+
+      if (playerUsi === recommendedUsi || loss <= 30) {
+        updateCoachCard('badge-good', '🌟 好手・最善手！', `指し手 ${playerJp} はAIの第一推奨手です！ ${moveExp}`, enginePv);
+      } else if (loss <= 120) {
+        updateCoachCard('badge-ok', '👍 合格手', `指し手 ${playerJp} は手堅い一手です。 ${moveExp} （AI最善手は ${bestJp}）`, enginePv);
+      } else {
+        updateCoachCard('badge-warn', '⚡ 緩手（少し疑問）', `指し手 ${playerJp} で少し形勢を損ねました（−${Math.round(loss)}点）。AIは ${bestJp} を推奨していました。`, enginePv);
+      }
+
+      // 手を確定
       saveHistory();
       usiHistory.push(playerUsi);
       executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
@@ -749,6 +898,37 @@
       updateDisplay();
 
       passTurnToCpu();
+    }
+
+    function updateCoachCard(badgeClass, badgeText, bodyText, pvArray) {
+      const badgeEl = document.getElementById('coach-badge');
+      badgeEl.className = `coach-badge ${badgeClass}`;
+      badgeEl.textContent = badgeText;
+      document.getElementById('coach-body').textContent = bodyText;
+
+      const pvEl = document.getElementById('coach-pv');
+      if (pvArray && pvArray.length > 0) {
+        // 読み筋の最初の3〜4手を日本語化して表示
+        let simB = JSON.parse(JSON.stringify(board));
+        let pvStrList = [];
+        let isSenteTurn = true;
+
+        for (let i = 0; i < Math.min(4, pvArray.length); i++) {
+          const u = pvArray[i];
+          const jpStr = formatUsiToJapanese(u, simB, isSenteTurn);
+          pvStrList.push(jpStr);
+          const m = usiToMove(u);
+          if (m) {
+            executeMoveOnBoard(simB, {0:{},1:{}}, isSenteTurn ? 0 : 1, m.from, m.drop, m.toR, m.toC, m.promote);
+          }
+          isSenteTurn = !isSenteTurn;
+        }
+
+        pvEl.textContent = '読み筋: ' + pvStrList.join(' ');
+        pvEl.style.display = 'block';
+      } else {
+        pvEl.style.display = 'none';
+      }
     }
 
     function showWhyBlunder() {
@@ -832,7 +1012,8 @@
       let selectedMove = null;
 
       if (isEngineReady && cpuLevel >= 2) {
-        const timeMs = cpuLevel === 3 ? 600 : 250;
+        // 上級は1.2秒探索、中級は0.5秒探索
+        const timeMs = cpuLevel === 3 ? 1200 : 500;
         const analysis = await evaluateWithEngine(usiHistory, timeMs);
         const parsed = usiToMove(analysis.bestMove);
         if (parsed) selectedMove = parsed;
