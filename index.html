@@ -1,138 +1,1061 @@
-import subprocess
-import re
-import time
-from typing import Optional, Tuple, Dict, Any
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>将棋ステップコーチ</title>
+  <!-- フォールバック用スクリプト読み込み -->
+  <script src="./stockfish.js" onerror="console.warn('Direct script load skipped')"></script>
+  <style>
+    :root {
+      --board-bg: #e5c088;
+      --cell-border: #6d4622;
+      --selected: #ffeb3b;
+      --movable: #69db7c;
+      --danger-target: #ff6b6b;
+      --danger-attacker: #fa5252;
+      --last-from: #ffd43b;
+      --last-to: #ffa94d;
+      --check-king: #ff49db;
+      --text-color: #212529;
+    }
+    body {
+      margin: 0;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #1e1e24;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #f8f9fa;
+      user-select: none;
+    }
+    h1 {
+      font-size: 1.05rem;
+      margin: 2px 0 4px 0;
+    }
+    #app-container {
+      width: 100%;
+      max-width: 370px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+    }
+    .engine-status-bar {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #111827;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 0.68rem;
+      box-sizing: border-box;
+    }
+    .status-badge {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59f00;
+      margin-right: 4px;
+    }
+    .status-badge.ready {
+      background: #37b24d;
+    }
+    .control-panel {
+      width: 100%;
+      background: #2b2d42;
+      border-radius: 6px;
+      padding: 4px 6px;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-sizing: border-box;
+      font-size: 0.72rem;
+    }
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .setting-label {
+      color: #adb5bd;
+      font-size: 0.65rem;
+    }
+    select {
+      background: #3d405b;
+      color: #fff;
+      border: 1px solid #6c757d;
+      border-radius: 4px;
+      padding: 2px 3px;
+      font-size: 0.72rem;
+      outline: none;
+    }
+    .btn-action {
+      background: #495057;
+      color: #fff;
+      border: none;
+      padding: 5px 7px;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .btn-action:active {
+      background: #343a40;
+    }
+    .stand {
+      width: 100%;
+      min-height: 36px;
+      background: #2b2d42;
+      border-radius: 6px;
+      margin: 2px 0;
+      display: flex;
+      align-items: center;
+      padding: 2px 6px;
+      box-sizing: border-box;
+      font-size: 0.8rem;
+    }
+    .stand-label {
+      color: #adb5bd;
+      margin-right: 6px;
+      font-size: 0.7rem;
+      white-space: nowrap;
+    }
+    .stand-list {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .stand-piece {
+      background: var(--board-bg);
+      color: var(--text-color);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+      border: 1px solid var(--cell-border);
+      font-size: 0.85rem;
+    }
+    .stand-piece.selected {
+      background: var(--selected);
+      outline: 2px solid #f59f00;
+    }
+    .board-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 2px 0;
+    }
+    .file-labels {
+      display: grid;
+      grid-template-columns: repeat(9, 1fr);
+      width: 324px;
+      font-size: 0.7rem;
+      color: #adb5bd;
+      text-align: center;
+      margin-bottom: 2px;
+      padding-right: 18px;
+      box-sizing: border-box;
+    }
+    .board-middle {
+      display: flex;
+      align-items: center;
+    }
+    #board {
+      display: grid;
+      grid-template-columns: repeat(9, 1fr);
+      grid-template-rows: repeat(9, 1fr);
+      width: 324px;
+      height: 324px;
+      border: 2px solid var(--cell-border);
+      background-color: var(--board-bg);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+    }
+    .rank-labels {
+      display: grid;
+      grid-template-rows: repeat(9, 1fr);
+      height: 324px;
+      width: 18px;
+      font-size: 0.7rem;
+      color: #adb5bd;
+      text-align: center;
+      line-height: 36px;
+    }
+    .cell {
+      border: 0.5px solid var(--cell-border);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 1.15rem;
+      font-weight: bold;
+      color: var(--text-color);
+      cursor: pointer;
+      position: relative;
+      box-sizing: border-box;
+      transition: background-color 0.1s ease;
+    }
+    .cell.selected { background-color: var(--selected); }
+    .cell.movable { background-color: var(--movable); }
+    .cell.last-move-from { background-color: var(--last-from) !important; opacity: 0.85; }
+    .cell.last-move-to { background-color: var(--last-to) !important; box-shadow: inset 0 0 0 2px #e8590c; }
+    .cell.punish-attacker { background-color: var(--danger-attacker) !important; }
+    .cell.punish-target { background-color: var(--danger-target) !important; }
+    .cell.in-check { background-color: var(--check-king) !important; animation: blink 0.7s infinite alternate; }
+    @keyframes blink { from { opacity: 0.6; } to { opacity: 1; } }
+    .gote { transform: rotate(180deg); color: #9b111e; }
+    .sente { color: #111111; }
+    #status-box {
+      margin-top: 4px;
+      padding: 6px 10px;
+      width: 100%;
+      background-color: #2b2d42;
+      border-radius: 6px;
+      text-align: center;
+      font-size: 0.82rem;
+      min-height: 20px;
+      box-sizing: border-box;
+    }
+    .modal-overlay {
+      display: none;
+      position: absolute;
+      top: 35px;
+      width: 324px;
+      background: #ffffff;
+      color: #212529;
+      padding: 14px;
+      border-radius: 10px;
+      box-shadow: 0 8px 25px rgba(0,0,0,0.8);
+      text-align: center;
+      z-index: 100;
+      box-sizing: border-box;
+    }
+    #brake-modal { border: 3px solid #e03131; }
+    #promote-modal { border: 3px solid #1971c2; }
+    .modal-title { margin: 0 0 4px 0; font-size: 1.05rem; }
+    .modal-score {
+      display: inline-block;
+      background: #ffe3e3;
+      color: #c92a2a;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: bold;
+      font-size: 0.8rem;
+      margin-bottom: 8px;
+    }
+    .modal-desc { margin: 0 0 10px 0; font-size: 0.82rem; line-height: 1.4; }
+    .modal-btns { display: flex; flex-direction: column; gap: 6px; }
+    .modal-btns-row { display: flex; gap: 8px; justify-content: center; }
+    .btn {
+      border: none;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .btn-why { background: #1971c2; color: #ffffff; }
+    .btn-undo { background: #e03131; color: #ffffff; }
+    .btn-continue { background: #ced4da; color: #343a40; }
+    .btn-promote { background: #2f9e44; color: #ffffff; flex: 1; padding: 10px; }
+    .btn-unpromote { background: #868e96; color: #ffffff; flex: 1; padding: 10px; }
+  </style>
+</head>
+<body>
 
-class EngineConnector:
-    """
-    UCI/USIプロトコルに対応した外部思考エンジンを制御するクラス。
-    チェス(Stockfish等)や将棋(やねうら王等)のバイナリを呼び出して評価値を取得します。
-    """
-    def __init__(self, engine_path: str, protocol: str = "uci"):
-        self.engine_path = engine_path
-        self.protocol = protocol.lower()  # "uci" または "usi"
-        self.process: Optional[subprocess.Popen] = None
-        self._start_engine()
+  <div id="app-container">
+    <h1>将棋ステップコーチ</h1>
 
-    def _start_engine(self) -> None:
-        # エンジンプロセスを標準入出力パイプで起動
-        self.process = subprocess.Popen(
-            [self.engine_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
-        
-        # 初期化コマンドの送信
-        init_cmd = "uci" if self.protocol == "uci" else "usi"
-        ok_response = "uciok" if self.protocol == "uci" else "usiok"
-        
-        self.send_command(init_cmd)
-        self._wait_for_response(ok_response)
-        
-        # 準備完了の確認
-        self.send_command("isready")
-        self._wait_for_response("readyok")
+    <!-- エンジン稼働ステータスバー -->
+    <div class="engine-status-bar">
+      <div>
+        <span id="engine-indicator" class="status-badge"></span>
+        <span id="engine-label">Fairy-Stockfish: 準備中...</span>
+      </div>
+      <div id="eval-display">評価値: 0</div>
+    </div>
 
-    def send_command(self, command: str) -> None:
-        if self.process and self.process.stdin:
-            self.process.stdin.write(f"{command}\n")
-            self.process.stdin.flush()
+    <!-- コントロールパネル -->
+    <div class="control-panel">
+      <div class="setting-group">
+        <span class="setting-label">相手レベル</span>
+        <select id="cpu-level">
+          <option value="1">初級</option>
+          <option value="2" selected>中級</option>
+          <option value="3">上級</option>
+        </select>
+      </div>
 
-    def _wait_for_response(self, target: str) -> None:
-        if not self.process or not self.process.stdout:
-            return
-        while True:
-            line = self.process.stdout.readline().strip()
-            if line == target:
-                break
+      <div class="setting-group">
+        <span class="setting-label">アシスト（目標棋力）</span>
+        <select id="assist-level">
+          <option value="10k">アマ10級（大悪手のみ）</option>
+          <option value="5k" selected>アマ5級（悪手を警告）</option>
+          <option value="1d">アマ初段（疑問手も警告）</option>
+          <option value="3d">アマ三段（厳格モード）</option>
+          <option value="off">実戦（アシストなし）</option>
+        </select>
+      </div>
 
-    def evaluate_position(self, moves_str: str = "", search_time_ms: int = 1000) -> Dict[str, Any]:
-        """
-        指定した着手系列（例: 'e2e4 e7e5' や '7g7f 3c3d'）の局面を探索し、
-        評価値と最善手を返します。
-        """
-        if not self.process or not self.process.stdout:
-            raise RuntimeError("エンジンが起動していません。")
+      <button class="btn-action" onclick="undoSingleMove()">待った</button>
+      <button class="btn-action" onclick="confirmReset()">初手から</button>
+    </div>
 
-        # 局面のセット
-        if moves_str.strip():
-            self.send_command(f"position startpos moves {moves_str.strip()}")
-        else:
-            self.send_command("position startpos")
+    <!-- CPU（後手）持ち駒 -->
+    <div class="stand">
+      <span class="stand-label">CPU持ち駒</span>
+      <div id="gote-stand" class="stand-list">なし</div>
+    </div>
 
-        # 思考開始コマンドの送信（指定ミリ秒探索）
-        self.send_command(f"go movetime {search_time_ms}")
+    <!-- 将棋盤エリア -->
+    <div class="board-wrapper">
+      <div class="file-labels">
+        <span>9</span><span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span>
+      </div>
+      <div class="board-middle">
+        <div id="board"></div>
+        <div class="rank-labels">
+          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>七</span><span>八</span><span>九</span>
+        </div>
+      </div>
+    </div>
 
-        latest_score_cp: Optional[int] = None
-        latest_mate: Optional[int] = None
-        bestmove: Optional[str] = None
+    <!-- プレイヤー（先手）持ち駒 -->
+    <div class="stand">
+      <span class="stand-label">自持ち駒</span>
+      <div id="sente-stand" class="stand-list">なし</div>
+    </div>
 
-        # エンジンからの出力を1行ずつ解析
-        while True:
-            line = self.process.stdout.readline().strip()
-            if not line:
-                continue
+    <div id="status-box">対局開始。あなたの手番です</div>
 
-            # 評価値情報行（info depth ... score cp 120 ...）のパース
-            if line.startswith("info") and "score" in line:
-                cp_match = re.search(r"score\s+cp\s+(-?\d+)", line)
-                mate_match = re.search(r"score\s+mate\s+(-?\d+)", line)
-                if cp_match:
-                    latest_score_cp = int(cp_match.group(1))
-                    latest_mate = None
-                elif mate_match:
-                    latest_mate = int(mate_match.group(1))
-                    latest_score_cp = None
+    <!-- 悪手ブレーキモーダル -->
+    <div id="brake-modal" class="modal-overlay">
+      <h2 class="modal-title" style="color: #c92a2a;">⚠️ 悪手ブレーキ作動！</h2>
+      <div id="brake-score-badge" class="modal-score">評価値落差 −350点</div>
+      <p id="brake-msg" class="modal-desc">形勢を損ねる疑問手です。</p>
+      <div class="modal-btns">
+        <button class="btn btn-why" onclick="showWhyBlunder()">なぜ？（相手の反撃を見る）</button>
+        <button class="btn btn-undo" onclick="undoMove()">待った（直前に巻き戻す）</button>
+        <button class="btn btn-continue" onclick="continueMove()">強行する</button>
+      </div>
+    </div>
 
-            # 思考完了行（bestmove e7e5 ...）
-            if line.startswith("bestmove"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    bestmove = parts[1]
-                break
+    <!-- 成り選択モーダル -->
+    <div id="promote-modal" class="modal-overlay">
+      <h2 class="modal-title" style="color: #1864ab;">成りますか？</h2>
+      <p class="modal-desc">駒をパワーアップさせることができます。</p>
+      <div class="modal-btns-row">
+        <button class="btn btn-promote" onclick="finishPromotion(true)">成る</button>
+        <button class="btn btn-unpromote" onclick="finishPromotion(false)">不成（ならず）</button>
+      </div>
+    </div>
+  </div>
 
-        return {
-            "score_cp": latest_score_cp,  # センティポーン単位（100 = ポーン/歩1枚分の有利）
-            "mate_in": latest_mate,       # 詰みまでの手数（詰み局面でない場合はNone）
-            "bestmove": bestmove          # 最善手
+  <script>
+    // 駒表記
+    const KANJI = {
+      FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
+      TO: 'と', NY: '杏', NK: '圭', NG: '全', UM: '馬', RY: '竜'
+    };
+    const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
+    const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
+
+    // USI表記文字対応
+    const USI_PIECE_TO_TYPE = { 'P': 'FU', 'L': 'KY', 'N': 'KE', 'S': 'GI', 'G': 'KI', 'B': 'KA', 'R': 'HI', 'K': 'OU' };
+    const TYPE_TO_USI_PIECE = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' };
+    const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
+
+    // 棋力別アシスト閾値（評価値落差 Loss）
+    const ASSIST_THRESHOLDS = {
+      '10k': 650, // 10級：大駒タダ取り等の大悪手のみ
+      '5k': 400,  // 5級：ハッキリした悪手を警告
+      '1d': 220,  // 初段：緩手・疑問手も指摘
+      '3d': 120,  // 三段：微小な形勢差も厳格判定
+      'off': 999999
+    };
+
+    let board = [];
+    let hands = { 0: {}, 1: {} };
+    let turn = 0;
+    let selectedSquare = null;
+    let selectedDrop = null;
+    let legalMoves = [];
+    let isCpuBusy = false;
+    let pendingPunish = null;
+    let pendingPromotion = null;
+    let lastMove = null;
+    let moveHistory = [];
+    let usiHistory = []; // USI指し手系列 (例: ["7g7f", "3c3d"])
+
+    // ==========================================
+    // Fairy-Stockfish WASM エンジン通信管理
+    // ==========================================
+    let engineWorker = null;
+    let isEngineReady = false;
+    let currentEngineResolve = null;
+    let currentEvalScore = 0;
+
+    function initFairyStockfish() {
+      try {
+        engineWorker = new Worker('./stockfish.js');
+        engineWorker.onmessage = onEngineMessage;
+        engineWorker.onerror = (e) => {
+          console.warn('Worker direct init fallback:', e);
+          tryScriptFallback();
+        };
+        sendToEngine('uci');
+      } catch (err) {
+        console.warn('Worker creation failed, using fallback:', err);
+        tryScriptFallback();
+      }
+    }
+
+    function tryScriptFallback() {
+      if (typeof Stockfish === 'function') {
+        Stockfish().then(sf => {
+          engineWorker = sf;
+          sf.addMessageListener((line) => onEngineMessage({ data: line }));
+          sendToEngine('uci');
+        });
+      }
+    }
+
+    function sendToEngine(cmd) {
+      if (engineWorker && typeof engineWorker.postMessage === 'function') {
+        engineWorker.postMessage(cmd);
+      }
+    }
+
+    function onEngineMessage(e) {
+      const line = typeof e.data === 'string' ? e.data.trim() : '';
+      if (!line) return;
+
+      if (line === 'uciok') {
+        sendToEngine('setoption name UCI_Variant value shogi');
+        sendToEngine('setoption name Threads value 1');
+        sendToEngine('setoption name Hash value 16');
+        sendToEngine('isready');
+      } else if (line === 'readyok') {
+        isEngineReady = true;
+        document.getElementById('engine-indicator').classList.add('ready');
+        document.getElementById('engine-label').textContent = 'Fairy-Stockfish: 稼働中';
+      }
+
+      // 評価値のパース
+      if (line.startsWith('info') && line.includes('score cp')) {
+        const parts = line.split(/\s+/);
+        const cpIdx = parts.indexOf('cp');
+        if (cpIdx !== -1 && parts[cpIdx + 1]) {
+          const cpVal = parseInt(parts[cpIdx + 1], 10);
+          // 手番側の評価値を先手視点に変換
+          currentEvalScore = (turn === 0) ? cpVal : -cpVal;
+          document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
+        }
+      }
+
+      // 最善手の受信
+      if (line.startsWith('bestmove')) {
+        const parts = line.split(/\s+/);
+        const bestMoveStr = parts[1];
+        if (currentEngineResolve) {
+          currentEngineResolve({ bestMove: bestMoveStr, score: currentEvalScore });
+          currentEngineResolve = null;
+        }
+      }
+    }
+
+    // エンジンに局面を探索させる（ミリ秒指定）
+    function evaluateWithEngine(moves, timeMs = 350) {
+      return new Promise((resolve) => {
+        if (!isEngineReady) {
+          // エンジン未起動時の簡易フォールバック
+          resolve({ bestMove: null, score: 0 });
+          return;
+        }
+        currentEngineResolve = resolve;
+        const movesCmd = moves.length > 0 ? ` moves ${moves.join(' ')}` : '';
+        sendToEngine(`position startpos${movesCmd}`);
+        sendToEngine(`go movetime ${timeMs}`);
+
+        // 念のためのタイムアウト保護
+        setTimeout(() => {
+          if (currentEngineResolve) {
+            currentEngineResolve({ bestMove: null, score: currentEvalScore });
+            currentEngineResolve = null;
+          }
+        }, timeMs + 300);
+      });
+    }
+
+    // ==========================================
+    // 局面・ルール管理
+    // ==========================================
+    function initGame() {
+      board = Array(9).fill(null).map(() => Array(9).fill(null));
+      hands = { 0: {}, 1: {} };
+      HAND_ORDER.forEach(k => { hands[0][k] = 0; hands[1][k] = 0; });
+      turn = 0;
+      selectedSquare = null;
+      selectedDrop = null;
+      legalMoves = [];
+      isCpuBusy = false;
+      pendingPunish = null;
+      pendingPromotion = null;
+      lastMove = null;
+      moveHistory = [];
+      usiHistory = [];
+
+      // 後手 (1)
+      const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
+      board[1][1] = { type: 'HI', color: 1 };
+      board[1][7] = { type: 'KA', color: 1 };
+      for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
+
+      // 先手 (0)
+      for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
+      board[7][1] = { type: 'KA', color: 0 };
+      board[7][7] = { type: 'HI', color: 0 };
+      const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
+
+      document.getElementById('brake-modal').style.display = 'none';
+      document.getElementById('promote-modal').style.display = 'none';
+      document.getElementById('eval-display').textContent = '評価値: 0';
+      buildBoardDOM();
+      updateDisplay();
+    }
+
+    function confirmReset() {
+      if (confirm('対局をリセットして初手からやり直しますか？')) initGame();
+    }
+
+    function buildBoardDOM() {
+      const boardEl = document.getElementById('board');
+      boardEl.innerHTML = '';
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          cell.dataset.r = r;
+          cell.dataset.c = c;
+          boardEl.appendChild(cell);
+        }
+      }
+      boardEl.onclick = handleBoardClick;
+    }
+
+    function handleBoardClick(e) {
+      if (isCpuBusy || turn !== 0) return;
+      const cell = e.target.closest('.cell');
+      if (!cell) return;
+      const r = parseInt(cell.dataset.r, 10);
+      const c = parseInt(cell.dataset.c, 10);
+      onCellClick(r, c);
+    }
+
+    function updateDisplay(highlightAttacker = null, highlightTarget = null) {
+      const cells = document.querySelectorAll('#board .cell');
+      const senteKingInCheck = isKingInCheck(board, 0);
+
+      cells.forEach(cell => {
+        const r = parseInt(cell.dataset.r, 10);
+        const c = parseInt(cell.dataset.c, 10);
+        const piece = board[r][c];
+
+        cell.className = 'cell';
+        cell.textContent = piece ? KANJI[piece.type] : '';
+
+        if (piece) {
+          cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
+          if (piece.type === 'OU' && piece.color === 0 && senteKingInCheck) {
+            cell.classList.add('in-check');
+          }
         }
 
-    def quit(self) -> None:
-        if self.process:
-            self.send_command("quit")
-            self.process.terminate()
-            self.process.wait()
+        if (lastMove) {
+          if (lastMove.fromR === r && lastMove.fromC === c) cell.classList.add('last-move-from');
+          if (lastMove.toR === r && lastMove.toC === c) cell.classList.add('last-move-to');
+        }
 
+        if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) {
+          cell.classList.add('selected');
+        }
 
-if __name__ == "__main__":
-    # 使用例：
-    # 1. 外部エンジンの実行ファイルパスを指定（環境に合わせて変更してください）
-    # 例: "./stockfish/stockfish-ubuntu-x86-64-avx2" や "C:/engines/stockfish.exe"
-    ENGINE_PATH = "./stockfish"
-    
-    try:
-        # チェスエンジンの場合: protocol="uci"
-        # 将棋エンジンの場合: protocol="usi"
-        engine = EngineConnector(engine_path=ENGINE_PATH, protocol="uci")
+        if (legalMoves.some(m => m.toR === r && m.toC === c)) {
+          cell.classList.add('movable');
+        }
 
-        print("エンジンを初期化しました。初期局面から1手目 'e2e4' 後の評価値を計算します...")
-        
-        # 初期局面から 'e2e4' が指された局面の評価（探索時間1.5秒）
-        result = engine.evaluate_position(moves_str="e2e4", search_time_ms=1500)
+        if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) {
+          cell.classList.add('punish-attacker');
+        }
+        if (highlightTarget && highlightTarget.r === r && highlightTarget.c === c) {
+          cell.classList.add('punish-target');
+        }
+      });
 
-        print("\n--- 解析結果 ---")
-        if result["score_cp"] is not None:
-            print(f"評価値 (先手視点): {result['score_cp']} cp")
-        elif result["mate_in"] is not None:
-            print(f"詰み: {result['mate_in']} 手詰み")
-            
-        print(f"エンジンの推奨する最善手: {result['bestmove']}")
+      renderStand('sente-stand', 0);
+      renderStand('gote-stand', 1);
 
-        engine.quit()
+      const statusEl = document.getElementById('status-box');
+      if (senteKingInCheck && !isCpuBusy && turn === 0) {
+        statusEl.textContent = '⚠️ 王手されています！玉を逃げるか防いでください';
+      }
+    }
 
-    except FileNotFoundError:
-        print(f"指定されたパスにエンジンが見つかりません: {ENGINE_PATH}")
-        print("エンジンのバイナリをダウンロードし、実行パスを正しく設定してください。")
+    function renderStand(elId, color) {
+      const el = document.getElementById(elId);
+      el.innerHTML = '';
+      let hasAny = false;
+
+      HAND_ORDER.forEach(type => {
+        const count = hands[color][type] || 0;
+        if (count > 0) {
+          hasAny = true;
+          const chip = document.createElement('div');
+          chip.className = 'stand-piece';
+          chip.textContent = `${KANJI[type]}${count > 1 ? '×' + count : ''}`;
+
+          if (color === 0 && selectedDrop === type) chip.classList.add('selected');
+
+          if (color === 0 && !isCpuBusy && turn === 0) {
+            chip.onclick = () => onSelectDrop(type);
+          }
+          el.appendChild(chip);
+        }
+      });
+      if (!hasAny) el.textContent = 'なし';
+    }
+
+    function onSelectDrop(type) {
+      selectedSquare = null;
+      selectedDrop = type;
+      legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.drop === type);
+      document.getElementById('status-box').textContent = `${KANJI[type]} を打つマスを選んでください`;
+      updateDisplay();
+    }
+
+    function onCellClick(r, c) {
+      const targetMove = legalMoves.find(m => m.toR === r && m.toC === c);
+
+      if (targetMove) {
+        const piece = targetMove.drop ? null : board[targetMove.from.r][targetMove.from.c];
+        const canPromote = piece && PROMOTE_MAP[piece.type] && (targetMove.toR <= 2 || targetMove.from.r <= 2);
+
+        const mustPromote = piece && (
+          (piece.type === 'FU' || piece.type === 'KY') && targetMove.toR === 0
+        ) || (piece.type === 'KE' && targetMove.toR <= 1);
+
+        if (mustPromote) {
+          processPlayerMove(targetMove, true);
+        } else if (canPromote) {
+          isCpuBusy = true;
+          pendingPromotion = targetMove;
+          document.getElementById('promote-modal').style.display = 'block';
+        } else {
+          processPlayerMove(targetMove, false);
+        }
+        return;
+      }
+
+      const piece = board[r][c];
+      if (piece && piece.color === 0) {
+        selectedDrop = null;
+        selectedSquare = { r, c };
+        legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.from && m.from.r === r && m.from.c === c);
+        document.getElementById('status-box').textContent = `${KANJI[piece.type]} を選択中`;
+        updateDisplay();
+      } else {
+        selectedSquare = null;
+        selectedDrop = null;
+        legalMoves = [];
+        updateDisplay();
+      }
+    }
+
+    function finishPromotion(promote) {
+      document.getElementById('promote-modal').style.display = 'none';
+      if (pendingPromotion) {
+        const move = pendingPromotion;
+        pendingPromotion = null;
+        processPlayerMove(move, promote);
+      }
+    }
+
+    // 内部指し手をUSI文字列に変換
+    function moveToUsi(move, promote) {
+      const files = ['9','8','7','6','5','4','3','2','1'];
+      const ranks = ['a','b','c','d','e','f','g','h','i'];
+
+      if (move.drop) {
+        const letter = TYPE_TO_USI_PIECE[move.drop];
+        return `${letter}*${files[move.toC]}${ranks[move.toR]}`;
+      } else {
+        const fromFile = files[move.from.c];
+        const fromRank = ranks[move.from.r];
+        const toFile = files[move.toC];
+        const toRank = ranks[move.toR];
+        return `${fromFile}${fromRank}${toFile}${toRank}${promote ? '+' : ''}`;
+      }
+    }
+
+    // USI文字列を内部指し手に変換
+    function usiToMove(usi) {
+      if (!usi || usi === '(none)') return null;
+      const files = ['9','8','7','6','5','4','3','2','1'];
+      const ranks = ['a','b','c','d','e','f','g','h','i'];
+
+      if (usi.includes('*')) {
+        const pieceLetter = usi[0];
+        const type = USI_PIECE_TO_TYPE[pieceLetter];
+        const toC = files.indexOf(usi[2]);
+        const toR = ranks.indexOf(usi[3]);
+        return { from: null, toR, toC, drop: type, promote: false };
+      } else {
+        const fromC = files.indexOf(usi[0]);
+        const fromR = ranks.indexOf(usi[1]);
+        const toC = files.indexOf(usi[2]);
+        const toR = ranks.indexOf(usi[3]);
+        const promote = usi.endsWith('+');
+        return { from: { r: fromR, c: fromC }, toR, toC, drop: null, promote };
+      }
+    }
+
+    // ==========================================
+    // プレイヤー着手処理 ＆ Fairy-Stockfish悪手判定
+    // ==========================================
+    async function processPlayerMove(move, promote) {
+      isCpuBusy = true;
+      document.getElementById('status-box').textContent = 'Fairy-Stockfish が局面を解析中...';
+
+      const assistLevel = document.getElementById('assist-level').value;
+      const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
+
+      // 1. 直前局面でのエンジン評価値（期待値）
+      const preAnalysis = await evaluateWithEngine(usiHistory, 300);
+      const preScore = preAnalysis.score;
+
+      // プレイヤーの手をUSIに追加
+      const playerUsi = moveToUsi(move, promote);
+      const candidateUsiHistory = [...usiHistory, playerUsi];
+
+      // 2. 指した後の局面をエンジンで探索（相手の手番での最善反撃手と評価値）
+      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 350);
+      const postScore = postAnalysis.score;
+
+      // 評価値の落差（先手視点での下落幅）
+      const loss = preScore - postScore;
+
+      // アシスト判定：評価値が目標棋力の基準を超えて急落した場合にブレーキ発動
+      if (assistLevel !== 'off' && isEngineReady && loss >= threshold) {
+        const killerMove = usiToMove(postAnalysis.bestMove);
+        pendingPunish = killerMove;
+
+        // 盤面にプレイヤーの手を一時反映
+        saveHistory();
+        executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
+        lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
+        updateDisplay();
+
+        const levelNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
+        document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
+        document.getElementById('brake-msg').textContent = `【${levelNames[assistLevel]}基準】その手を指すとエンジンに厳しい反撃を突かれ、形勢を損ねてしまいます。`;
+        document.getElementById('brake-modal').style.display = 'block';
+        return;
+      }
+
+      // 問題なければ確定
+      saveHistory();
+      usiHistory.push(playerUsi);
+      executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
+      lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
+
+      selectedSquare = null;
+      selectedDrop = null;
+      legalMoves = [];
+      updateDisplay();
+
+      passTurnToCpu();
+    }
+
+    function showWhyBlunder() {
+      document.getElementById('brake-modal').style.display = 'none';
+      if (!pendingPunish) {
+        undoMove();
+        return;
+      }
+
+      const p = pendingPunish;
+      isCpuBusy = true;
+
+      const attackerPos = p.from ? { r: p.from.r, c: p.from.c } : null;
+      const targetPos = { r: p.toR, c: p.toC };
+      updateDisplay(attackerPos, targetPos);
+      document.getElementById('status-box').textContent = '⚠️ Fairy-Stockfish の推奨反撃手順を再生中...';
+
+      setTimeout(() => {
+        executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, p.promote);
+        updateDisplay();
+        document.getElementById('status-box').textContent = '💥 相手に厳しい手を突かれてしまいました！';
+
+        setTimeout(() => {
+          undoMove();
+          document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
+        }, 1800);
+      }, 1000);
+    }
+
+    function undoMove() {
+      if (moveHistory.length > 0) {
+        const prev = moveHistory.pop();
+        usiHistory.pop();
+        board = JSON.parse(prev.board);
+        hands = JSON.parse(prev.hands);
+        lastMove = prev.lastMove ? JSON.parse(prev.lastMove) : null;
+        turn = 0;
+      }
+      isCpuBusy = false;
+      pendingPunish = null;
+      document.getElementById('brake-modal').style.display = 'none';
+      updateDisplay();
+    }
+
+    function continueMove() {
+      document.getElementById('brake-modal').style.display = 'none';
+      isCpuBusy = false;
+      pendingPunish = null;
+      document.getElementById('status-box').textContent = 'そのまま続行します。';
+      passTurnToCpu();
+    }
+
+    function undoSingleMove() {
+      if (isCpuBusy || moveHistory.length === 0) return;
+      undoMove();
+      document.getElementById('status-box').textContent = '1手前の状態に戻しました';
+    }
+
+    function saveHistory() {
+      moveHistory.push({
+        board: JSON.stringify(board),
+        hands: JSON.stringify(hands),
+        lastMove: lastMove ? JSON.stringify(lastMove) : null
+      });
+    }
+
+    // ==========================================
+    // CPU思考（Fairy-Stockfish 連携）
+    // ==========================================
+    async function passTurnToCpu() {
+      turn = 1;
+      isCpuBusy = true;
+      document.getElementById('status-box').textContent = '相手（CPU）が思考中...';
+
+      const cpuLegal = getStrictLegalMoves(board, hands, 1);
+      if (cpuLegal.length === 0) {
+        if (isKingInCheck(board, 1)) alert('お見事！詰みです。あなたの勝ちです！');
+        else alert('ステイルメイトです（引き分け）。');
+        isCpuBusy = false;
+        return;
+      }
+
+      const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
+      let selectedMove = null;
+
+      if (isEngineReady && cpuLevel >= 2) {
+        // 中級・上級：Fairy-Stockfish の最善手を採用
+        const timeMs = cpuLevel === 3 ? 600 : 250;
+        const analysis = await evaluateWithEngine(usiHistory, timeMs);
+        const parsed = usiToMove(analysis.bestMove);
+        if (parsed) selectedMove = parsed;
+      }
+
+      // 初級、またはエンジン解析待ち時のフォールバック
+      if (!selectedMove) {
+        selectedMove = cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
+        selectedMove.promote = (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6));
+      }
+
+      // 指し手適用
+      usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
+      executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
+      lastMove = { fromR: selectedMove.from ? selectedMove.from.r : null, fromC: selectedMove.from ? selectedMove.from.c : null, toR: selectedMove.toR, toC: selectedMove.toC };
+
+      turn = 0;
+      isCpuBusy = false;
+
+      const playerLegal = getStrictLegalMoves(board, hands, 0);
+      if (playerLegal.length === 0) {
+        if (isKingInCheck(board, 0)) alert('詰みです...あなたの負けです。');
+        else alert('指し手がありません（引き分け）。');
+        return;
+      }
+
+      document.getElementById('status-box').textContent = 'あなたの番です';
+      updateDisplay();
+    }
+
+    function executeMoveOnBoard(b, h, color, from, drop, toR, toC, promote) {
+      if (drop) {
+        b[toR][toC] = { type: drop, color: color };
+        h[color][drop]--;
+      } else {
+        const piece = b[from.r][from.c];
+        const dest = b[toR][toC];
+
+        if (dest) {
+          const raw = RAW_MAP[dest.type] || dest.type;
+          h[color][raw] = (h[color][raw] || 0) + 1;
+        }
+
+        let newType = piece.type;
+        if (promote && PROMOTE_MAP[piece.type]) {
+          newType = PROMOTE_MAP[piece.type];
+        }
+
+        b[toR][toC] = { type: newType, color: color };
+        b[from.r][from.c] = null;
+      }
+    }
+
+    // ==========================================
+    // ルール・合法手判定
+    // ==========================================
+    function getStrictLegalMoves(b, h, color) {
+      const candidates = getCandidateMoves(b, h, color);
+      const legal = [];
+
+      for (const m of candidates) {
+        const simB = JSON.parse(JSON.stringify(b));
+        const simH = JSON.parse(JSON.stringify(h));
+        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, false);
+
+        if (!isKingInCheck(simB, color)) legal.push(m);
+      }
+      return legal;
+    }
+
+    function isKingInCheck(b, color) {
+      let kr = -1, kc = -1;
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const p = b[r][c];
+          if (p && p.color === color && p.type === 'OU') {
+            kr = r; kc = c; break;
+          }
+        }
+        if (kr !== -1) break;
+      }
+      if (kr === -1) return true;
+      return isSquareAttacked(b, kr, kc, 1 - color);
+    }
+
+    function isSquareAttacked(b, r, c, byColor) {
+      for (let tr = 0; tr < 9; tr++) {
+        for (let tc = 0; tc < 9; tc++) {
+          const p = b[tr][tc];
+          if (p && p.color === byColor) {
+            const targets = getRawPieceMoves(b, tr, tc);
+            if (targets.some(t => t.r === r && t.c === c)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function getCandidateMoves(b, h, color) {
+      const list = [];
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const p = b[r][c];
+          if (p && p.color === color) {
+            const targets = getRawPieceMoves(b, r, c);
+            targets.forEach(t => list.push({ from: { r, c }, toR: t.r, toC: t.c, drop: null }));
+          }
+        }
+      }
+      HAND_ORDER.forEach(type => {
+        if (h[color][type] > 0) {
+          for (let r = 0; r < 9; r++) {
+            for (let c = 0; c < 9; c++) {
+              if (!b[r][c]) {
+                if (type === 'FU') {
+                  let hasFu = false;
+                  for (let tr = 0; tr < 9; tr++) {
+                    const checkP = b[tr][c];
+                    if (checkP && checkP.color === color && checkP.type === 'FU') { hasFu = true; break; }
+                  }
+                  if (hasFu) continue;
+                }
+                if ((type === 'FU' || type === 'KY') && ((color === 0 && r === 0) || (color === 1 && r === 8))) continue;
+                if (type === 'KE' && ((color === 0 && r <= 1) || (color === 1 && r >= 7))) continue;
+
+                list.push({ from: null, toR: r, toC: c, drop: type });
+              }
+            }
+          }
+        }
+      });
+      return list;
+    }
+
+    function getRawPieceMoves(b, r, c) {
+      const piece = b[r][c];
+      if (!piece) return [];
+      const color = piece.color;
+      const fwd = color === 0 ? -1 : 1;
+      const moves = [];
+
+      function add(nr, nc) {
+        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) return false;
+        const target = b[nr][nc];
+        if (!target) {
+          moves.push({ r: nr, c: nc });
+          return true;
+        }
+        if (target.color !== color) moves.push({ r: nr, c: nc });
+        return false;
+      }
+
+      function slide(dr, dc) {
+        let nr = r + dr; let nc = c + dc;
+        while (add(nr, nc)) { nr += dr; nc += dc; }
+      }
+
+      const type = piece.type;
+      if (type === 'FU') add(r + fwd, c);
+      else if (type === 'KY') slide(fwd, 0);
+      else if (type === 'KE') { add(r + fwd * 2, c - 1); add(r + fwd * 2, c + 1); }
+      else if (type === 'GI') { add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1); add(r - fwd, c - 1); add(r - fwd, c + 1); }
+      else if (type === 'KI' || type === 'TO' || type === 'NY' || type === 'NK' || type === 'NG') {
+        add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1);
+        add(r, c - 1); add(r, c + 1); add(r - fwd, c);
+      }
+      else if (type === 'KA') { slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1); }
+      else if (type === 'HI') { slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1); }
+      else if (type === 'UM') {
+        slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1);
+        add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1);
+      }
+      else if (type === 'RY') {
+        slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1);
+        add(r - 1, c - 1); add(r - 1, c + 1); add(r + 1, c - 1); add(r + 1, c + 1);
+      }
+      else if (type === 'OU') {
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr !== 0 || dc !== 0) add(r + dr, c + dc);
+          }
+        }
+      }
+      return moves;
+    }
+
+    // 起動
+    initGame();
+    initFairyStockfish();
+  </script>
+</body>
+</html>
