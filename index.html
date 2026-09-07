@@ -10,6 +10,8 @@
       --cell-border: #6d4622;
       --selected: #ffeb3b;
       --movable: #69db7c;
+      --danger-target: #ff6b6b;
+      --danger-attacker: #fa5252;
       --text-color: #212529;
     }
     body {
@@ -92,12 +94,25 @@
       cursor: pointer;
       position: relative;
       box-sizing: border-box;
+      transition: background-color 0.2s ease;
     }
     .cell.selected {
       background-color: var(--selected);
     }
     .cell.movable {
       background-color: var(--movable);
+    }
+    /* 反撃アニメーション用のマス強調 */
+    .cell.punish-attacker {
+      background-color: var(--danger-attacker) !important;
+      animation: pulse 0.8s infinite alternate;
+    }
+    .cell.punish-target {
+      background-color: var(--danger-target) !important;
+    }
+    @keyframes pulse {
+      from { opacity: 0.7; }
+      to { opacity: 1; }
     }
     .gote {
       transform: rotate(180deg);
@@ -116,16 +131,17 @@
       font-size: 0.85rem;
       min-height: 20px;
     }
+    /* 悪手ブレーキ用ポップアップ */
     #brake-modal {
       display: none;
       position: absolute;
-      top: 50px;
-      width: 310px;
+      top: 40px;
+      width: 320px;
       background: #ffffff;
       color: #212529;
       padding: 16px;
       border-radius: 10px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.7);
       border: 3px solid #e03131;
       text-align: center;
       z-index: 100;
@@ -137,22 +153,26 @@
       font-size: 1.1rem;
     }
     #brake-modal p {
-      margin: 0 0 12px 0;
+      margin: 0 0 14px 0;
       font-size: 0.85rem;
       line-height: 1.4;
     }
     .modal-btns {
       display: flex;
-      gap: 8px;
-      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
     }
     .btn {
       border: none;
-      padding: 8px 14px;
+      padding: 8px 10px;
       border-radius: 6px;
       font-weight: bold;
       cursor: pointer;
-      font-size: 0.8rem;
+      font-size: 0.82rem;
+    }
+    .btn-why {
+      background: #1971c2;
+      color: #ffffff;
     }
     .btn-undo {
       background: #e03131;
@@ -192,14 +212,14 @@
       <h2>⚠️ 悪手ブレーキ作動！</h2>
       <p id="brake-msg">その手は相手に駒をタダ取りされます。</p>
       <div class="modal-btns">
-        <button class="btn btn-undo" onclick="undoMove()">待った（巻き戻す）</button>
+        <button class="btn btn-why" onclick="showWhyBlunder()">なぜ？（相手の反撃を見る）</button>
+        <button class="btn btn-undo" onclick="undoMove()">待った（直前に巻き戻す）</button>
         <button class="btn btn-continue" onclick="continueMove()">強行する</button>
       </div>
     </div>
   </div>
 
   <script>
-    // 駒の漢字・価値マッピング
     const KANJI = {
       FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
       TO: 'と', NY: '成香', NK: '成桂', NG: '成銀', UM: '馬', RY: '竜'
@@ -208,17 +228,16 @@
     const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
     const VALUES = { FU: 1, KY: 3, KE: 4, GI: 5, KI: 6, KA: 8, HI: 10, OU: 100, TO: 6, NY: 6, NK: 6, NG: 6, UM: 10, RY: 12 };
 
-    // ゲーム状態
     let board = [];
-    let hands = { 0: {}, 1: {} }; // 0: 先手, 1: 後手
-    let turn = 0; // 0: 先手, 1: 後手
+    let hands = { 0: {}, 1: {} };
+    let turn = 0;
     let selectedSquare = null;
     let selectedDrop = null;
     let legalMoves = [];
     let isCpuBusy = false;
     let backupState = null;
+    let pendingPunish = null; // 相手の反撃手データ
 
-    // 初期配置の生成
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
       hands = { 0: {}, 1: {} };
@@ -241,8 +260,7 @@
       render();
     }
 
-    // 画面描画
-    function render() {
+    function render(highlightAttacker = null, highlightTarget = null) {
       const boardEl = document.getElementById('board');
       boardEl.innerHTML = '';
 
@@ -264,6 +282,14 @@
           const isTarget = legalMoves.some(m => m.r === r && m.c === c);
           if (isTarget) {
             cell.classList.add('movable');
+          }
+
+          // 反撃デモ用のマス強調
+          if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) {
+            cell.classList.add('punish-attacker');
+          }
+          if (highlightTarget && highlightTarget.r === r && highlightTarget.c === c) {
+            cell.classList.add('punish-target');
           }
 
           cell.addEventListener('click', () => onCellClick(r, c));
@@ -301,7 +327,6 @@
       if (!hasAny) el.textContent = 'なし';
     }
 
-    // 駒選択・移動処理
     function onSelectDrop(type) {
       selectedSquare = null;
       selectedDrop = type;
@@ -315,7 +340,6 @@
 
       const targetMove = legalMoves.find(m => m.r === r && m.c === c);
 
-      // 移動実行
       if (targetMove) {
         saveState();
         executeMove(0, selectedSquare, selectedDrop, r, c);
@@ -324,10 +348,11 @@
         legalMoves = [];
         render();
 
-        // 悪手判定
-        const blunderMsg = checkBlunder(r, c);
-        if (blunderMsg) {
-          showBrake(blunderMsg);
+        // 悪手判定（反撃手の取得）
+        const blunder = checkBlunder(r, c);
+        if (blunder) {
+          pendingPunish = blunder.punishMove;
+          showBrake(blunder.message);
           return;
         }
 
@@ -335,7 +360,6 @@
         return;
       }
 
-      // 盤上の自分の駒を選択
       const piece = board[r][c];
       if (piece && piece.color === 0) {
         selectedDrop = null;
@@ -351,7 +375,6 @@
       }
     }
 
-    // 移動実行ロジック
     function executeMove(color, from, dropType, toR, toC) {
       if (dropType) {
         board[toR][toC] = { type: dropType, color: color };
@@ -360,13 +383,11 @@
         const piece = board[from.r][from.c];
         const dest = board[toR][toC];
 
-        // 駒を取る
         if (dest) {
           const raw = RAW_MAP[dest.type] || dest.type;
           hands[color][raw] = (hands[color][raw] || 0) + 1;
         }
 
-        // 成り判定（3段目以内への侵入・移動で成る）
         let newType = piece.type;
         const inEnemyTerritory = color === 0 ? (toR <= 2 || from.r <= 2) : (toR >= 6 || from.r >= 6);
         if (PROMOTE_MAP[piece.type] && inEnemyTerritory) {
@@ -378,16 +399,21 @@
       }
     }
 
-    // 悪手ブレーキ（初歩判定：動かした駒が即座に相手にタダ取りされるか）
+    // 悪手検出（咎める手を返す）
     function checkBlunder(toR, toC) {
       const piece = board[toR][toC];
-      if (!piece || VALUES[piece.type] < 5) return null; // 歩や香・桂以外の主要駒を検知
+      if (!piece || VALUES[piece.type] < 5) return null;
 
       const oppMoves = getAllMoves(board, 1);
-      const isTargeted = oppMoves.some(m => m.toR === toR && m.toC === toC);
+      const killerMove = oppMoves.find(m => m.toR === toR && m.toC === toC);
 
-      if (isTargeted) {
-        return `【悪手警告】指したばかりの ${KANJI[piece.type]} が相手の利きに入っています！タダ取りされてしまいます。`;
+      if (killerMove) {
+        const attacker = killerMove.from ? board[killerMove.from.r][killerMove.from.c] : null;
+        const attackerName = attacker ? KANJI[attacker.type] : '相手の持ち駒';
+        return {
+          message: `指したばかりの ${KANJI[piece.type]} が ${attackerName} の利きに入っています！タダ取りされてしまいます。`,
+          punishMove: { ...killerMove, targetType: piece.type }
+        };
       }
       return null;
     }
@@ -397,19 +423,49 @@
       document.getElementById('brake-modal').style.display = 'block';
     }
 
+    // 【目玉機能】相手の反撃アニメーション再生
+    function showWhyBlunder() {
+      document.getElementById('brake-modal').style.display = 'none';
+      if (!pendingPunish) return;
+
+      const p = pendingPunish;
+      isCpuBusy = true;
+
+      // 1. 狙っている駒と取られる駒を色で強調
+      const attackerPos = p.from ? { r: p.from.r, c: p.from.c } : null;
+      const targetPos = { r: p.toR, c: p.toC };
+      render(attackerPos, targetPos);
+      document.getElementById('status-box').textContent = '⚠️ 相手の狙い筋を再生します...';
+
+      // 2. 1秒後に相手が駒を取る手を実行
+      setTimeout(() => {
+        executeMove(1, p.from, p.drop, p.toR, p.toC);
+        render();
+        document.getElementById('status-box').textContent = `💥 相手に ${KANJI[p.targetType]} を取られてしまいました！`;
+
+        // 3. 取られた事実をしっかり見せた後（1.8秒後）、直前へ自動巻き戻し
+        setTimeout(() => {
+          undoMove();
+          document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
+        }, 1800);
+      }, 1000);
+    }
+
     function undoMove() {
       if (backupState) {
         board = JSON.parse(backupState.board);
         hands = JSON.parse(backupState.hands);
         turn = 0;
       }
+      isCpuBusy = false;
+      pendingPunish = null;
       document.getElementById('brake-modal').style.display = 'none';
-      document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を考えましょう！';
       render();
     }
 
     function continueMove() {
       document.getElementById('brake-modal').style.display = 'none';
+      pendingPunish = null;
       document.getElementById('status-box').textContent = 'そのまま続行します。';
       passTurnToCpu();
     }
@@ -435,7 +491,6 @@
       }, 700);
     }
 
-    // 簡易CPUロジック
     function playCpuTurn() {
       const moves = getAllMoves(board, 1);
       if (moves.length === 0) {
@@ -443,7 +498,6 @@
         return;
       }
 
-      // 1. 取れる駒がある手を最優先（価値の高い駒を狙う）
       let bestMove = null;
       let maxVal = -1;
 
@@ -458,7 +512,6 @@
         }
       }
 
-      // 2. なければランダムに前進
       if (!bestMove) {
         bestMove = moves[Math.floor(Math.random() * moves.length)];
       }
@@ -466,12 +519,11 @@
       executeMove(1, bestMove.from, bestMove.drop, bestMove.toR, bestMove.toC);
     }
 
-    // 駒ごとの移動ルール定義
     function getPieceMoves(b, r, c) {
       const piece = b[r][c];
       if (!piece) return [];
       const color = piece.color;
-      const fwd = color === 0 ? -1 : 1; // 前進方向
+      const fwd = color === 0 ? -1 : 1;
       const moves = [];
 
       function add(nr, nc) {
@@ -479,12 +531,12 @@
         const target = b[nr][nc];
         if (!target) {
           moves.push({ r: nr, c: nc });
-          return true; // 空きマスならスライド継続
+          return true;
         }
         if (target.color !== color) {
-          moves.push({ r: nr, c: nc }); // 相手の駒を取れる
+          moves.push({ r: nr, c: nc });
         }
-        return false; // 駒にぶつかったらスライド停止
+        return false;
       }
 
       function slide(dr, dc) {
@@ -537,13 +589,11 @@
       return moves;
     }
 
-    // 持ち駒を打てるマス
     function getDropMoves(color, type) {
       const moves = [];
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
           if (!board[r][c]) {
-            // 二歩禁止
             if (type === 'FU') {
               let hasFu = false;
               for (let tr = 0; tr < 9; tr++) {
@@ -555,7 +605,6 @@
               }
               if (hasFu) continue;
             }
-            // 行き所のない駒禁止
             if (type === 'FU' || type === 'KY') {
               if (color === 0 && r === 0) continue;
               if (color === 1 && r === 8) continue;
@@ -573,7 +622,6 @@
 
     function getAllMoves(b, color) {
       const moves = [];
-      // 盤上の手
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
           const piece = b[r][c];
@@ -583,7 +631,6 @@
           }
         }
       }
-      // 持ち駒を打つ手
       for (const type in hands[color]) {
         if (hands[color][type] > 0) {
           const drops = getDropMoves(color, type);
@@ -593,7 +640,6 @@
       return moves;
     }
 
-    // 起動
     initGame();
   </script>
 </body>
