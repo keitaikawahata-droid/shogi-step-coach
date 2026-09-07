@@ -29,7 +29,7 @@
     }
     h1 {
       font-size: 1.1rem;
-      margin: 4px 0 8px 0;
+      margin: 2px 0 6px 0;
     }
     #app-container {
       width: 100%;
@@ -39,22 +39,66 @@
       align-items: center;
       position: relative;
     }
-    .stand {
+    /* 設定コントロールエリア */
+    .control-panel {
       width: 342px;
-      min-height: 38px;
       background: #2b2d42;
       border-radius: 6px;
-      margin: 4px 0;
+      padding: 6px 10px;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-sizing: border-box;
+      font-size: 0.78rem;
+    }
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .setting-label {
+      color: #adb5bd;
+      font-size: 0.7rem;
+    }
+    select {
+      background: #3d405b;
+      color: #fff;
+      border: 1px solid #6c757d;
+      border-radius: 4px;
+      padding: 2px 4px;
+      font-size: 0.75rem;
+      outline: none;
+    }
+    .btn-reset {
+      background: #495057;
+      color: #fff;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .btn-reset:active {
+      background: #343a40;
+    }
+    /* 駒台 */
+    .stand {
+      width: 342px;
+      min-height: 36px;
+      background: #2b2d42;
+      border-radius: 6px;
+      margin: 3px 0;
       display: flex;
       align-items: center;
-      padding: 4px 8px;
+      padding: 3px 8px;
       box-sizing: border-box;
       font-size: 0.8rem;
     }
     .stand-label {
       color: #adb5bd;
       margin-right: 8px;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       white-space: nowrap;
     }
     .stand-list {
@@ -75,6 +119,7 @@
       background: var(--selected);
       outline: 2px solid #f59f00;
     }
+    /* 将棋盤 */
     #board {
       display: grid;
       grid-template-columns: repeat(9, 1fr);
@@ -104,7 +149,6 @@
     .cell.movable {
       background-color: var(--movable);
     }
-    /* 直前の指し手ハイライト */
     .cell.last-move-from {
       background-color: var(--last-from) !important;
       opacity: 0.85;
@@ -113,7 +157,6 @@
       background-color: var(--last-to) !important;
       box-shadow: inset 0 0 0 2px #e8590c;
     }
-    /* 反撃アニメーション用のマス強調 */
     .cell.punish-attacker {
       background-color: var(--danger-attacker) !important;
       animation: pulse 0.8s infinite alternate;
@@ -133,19 +176,19 @@
       color: #111111;
     }
     #status-box {
-      margin-top: 8px;
-      padding: 8px 12px;
+      margin-top: 6px;
+      padding: 6px 12px;
       width: 318px;
       background-color: #2b2d42;
       border-radius: 6px;
       text-align: center;
-      font-size: 0.85rem;
-      min-height: 20px;
+      font-size: 0.82rem;
+      min-height: 18px;
     }
     #brake-modal {
       display: none;
       position: absolute;
-      top: 40px;
+      top: 50px;
       width: 320px;
       background: #ffffff;
       color: #212529;
@@ -160,11 +203,11 @@
     #brake-modal h2 {
       margin: 0 0 6px 0;
       color: #c92a2a;
-      font-size: 1.1rem;
+      font-size: 1.05rem;
     }
     #brake-modal p {
-      margin: 0 0 14px 0;
-      font-size: 0.85rem;
+      margin: 0 0 12px 0;
+      font-size: 0.82rem;
       line-height: 1.4;
     }
     .modal-btns {
@@ -178,7 +221,7 @@
       border-radius: 6px;
       font-weight: bold;
       cursor: pointer;
-      font-size: 0.82rem;
+      font-size: 0.8rem;
     }
     .btn-why {
       background: #1971c2;
@@ -199,6 +242,29 @@
   <div id="app-container">
     <h1>将棋ステップコーチ</h1>
 
+    <!-- レベル・設定パネル -->
+    <div class="control-panel">
+      <div class="setting-group">
+        <span class="setting-label">相手レベル</span>
+        <select id="cpu-level" onchange="onSettingChanged()">
+          <option value="1">初級（入門）</option>
+          <option value="2" selected>中級（基本）</option>
+          <option value="3">上級（手強い）</option>
+        </select>
+      </div>
+
+      <div class="setting-group">
+        <span class="setting-label">アシスト（ブレーキ）</span>
+        <select id="assist-level">
+          <option value="easy" selected>初級（手厚い）</option>
+          <option value="normal">中級（大駒のみ）</option>
+          <option value="off">上級（実戦・なし）</option>
+        </select>
+      </div>
+
+      <button class="btn-reset" onclick="initGame()">初手から</button>
+    </div>
+
     <!-- 後手（CPU）持ち駒 -->
     <div class="stand">
       <span class="stand-label">CPU持ち駒</span>
@@ -214,7 +280,7 @@
       <div id="sente-stand" class="stand-list">なし</div>
     </div>
 
-    <!-- ガイダンスメッセージ -->
+    <!-- 案内テキスト -->
     <div id="status-box">あなたの手番です。動かす駒を選んでください</div>
 
     <!-- 悪手ブレーキ表示モーダル -->
@@ -247,15 +313,18 @@
     let isCpuBusy = false;
     let backupState = null;
     let pendingPunish = null;
-
-    // 直前の指し手を記録する変数
-    let lastMove = null; // { fromR, fromC, toR, toC }
+    let lastMove = null;
 
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
       hands = { 0: {}, 1: {} };
       turn = 0;
       lastMove = null;
+      selectedSquare = null;
+      selectedDrop = null;
+      legalMoves = [];
+      isCpuBusy = false;
+      pendingPunish = null;
 
       // 後手 (1)
       const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
@@ -271,7 +340,14 @@
       const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
       for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
 
+      document.getElementById('brake-modal').style.display = 'none';
+      document.getElementById('status-box').textContent = '新しい対局を始めました。あなたの手番です';
       render();
+    }
+
+    function onSettingChanged() {
+      // 設定変更時の軽微な案内
+      document.getElementById('status-box').textContent = '相手レベルを変更しました';
     }
 
     function render(highlightAttacker = null, highlightTarget = null) {
@@ -289,28 +365,20 @@
             cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
           }
 
-          // 1. 直前の指し手（移動元・移動先）のハイライト
           if (lastMove) {
-            if (lastMove.fromR === r && lastMove.fromC === c) {
-              cell.classList.add('last-move-from');
-            }
-            if (lastMove.toR === r && lastMove.toC === c) {
-              cell.classList.add('last-move-to');
-            }
+            if (lastMove.fromR === r && lastMove.fromC === c) cell.classList.add('last-move-from');
+            if (lastMove.toR === r && lastMove.toC === c) cell.classList.add('last-move-to');
           }
 
-          // 2. 選択中のマス
           if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) {
             cell.classList.add('selected');
           }
 
-          // 3. 移動可能マス
           const isTarget = legalMoves.some(m => m.r === r && m.c === c);
           if (isTarget) {
             cell.classList.add('movable');
           }
 
-          // 4. 反撃デモ用のマス強調
           if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) {
             cell.classList.add('punish-attacker');
           }
@@ -374,6 +442,7 @@
         legalMoves = [];
         render();
 
+        // 悪手ブレーキ判定（ユーザーの選択レベルに応じて感度調整）
         const blunder = checkBlunder(r, c);
         if (blunder) {
           pendingPunish = blunder.punishMove;
@@ -401,7 +470,6 @@
     }
 
     function executeMove(color, from, dropType, toR, toC) {
-      // 直前の指し手を記録
       lastMove = {
         fromR: from ? from.r : null,
         fromC: from ? from.c : null,
@@ -432,9 +500,20 @@
       }
     }
 
+    // アシストレベルに応じた悪手判定
     function checkBlunder(toR, toC) {
+      const assistLevel = document.getElementById('assist-level').value;
+      if (assistLevel === 'off') return null; // 実戦モード：警告なし
+
       const piece = board[toR][toC];
-      if (!piece || VALUES[piece.type] < 5) return null;
+      if (!piece) return null;
+
+      const val = VALUES[piece.type] || 0;
+
+      // 初級：金・銀・角・飛（価値5以上）を監視
+      // 中級：大駒のみ（角・飛・馬・竜、価値8以上）を監視
+      const threshold = assistLevel === 'easy' ? 5 : 8;
+      if (val < threshold) return null;
 
       const oppMoves = getAllMoves(board, 1);
       const killerMove = oppMoves.find(m => m.toR === toR && m.toC === toC);
@@ -521,6 +600,7 @@
       }, 700);
     }
 
+    // 段階的CPU思考アルゴリズム
     function playCpuTurn() {
       const moves = getAllMoves(board, 1);
       if (moves.length === 0) {
@@ -528,25 +608,62 @@
         return;
       }
 
-      let bestMove = null;
-      let maxVal = -1;
+      const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
+      let selectedMove = null;
 
-      for (const m of moves) {
-        const target = board[m.toR][m.toC];
-        if (target && target.color === 0) {
-          const val = VALUES[target.type] || 0;
-          if (val > maxVal) {
-            maxVal = val;
-            bestMove = m;
+      if (cpuLevel === 1) {
+        // 【初級】70%ランダム、30%だけ駒取りを試行
+        const captureMoves = moves.filter(m => board[m.toR][m.toC] && board[m.toR][m.toC].color === 0);
+        if (captureMoves.length > 0 && Math.random() < 0.3) {
+          selectedMove = captureMoves[Math.floor(Math.random() * captureMoves.length)];
+        } else {
+          selectedMove = moves[Math.floor(Math.random() * moves.length)];
+        }
+      } else if (cpuLevel === 2) {
+        // 【中級】取れる最も高い駒を優先、なければランダム
+        let bestVal = -1;
+        for (const m of moves) {
+          const dest = board[m.toR][m.toC];
+          if (dest && dest.color === 0) {
+            const val = VALUES[dest.type] || 0;
+            if (val > bestVal) {
+              bestVal = val;
+              selectedMove = m;
+            }
+          }
+        }
+        if (!selectedMove) {
+          selectedMove = moves[Math.floor(Math.random() * moves.length)];
+        }
+      } else {
+        // 【上級】簡易スコアリング（駒得 + 成り手ボーナス + 前進ボーナス）
+        let bestScore = -9999;
+        for (const m of moves) {
+          let score = 0;
+          const dest = board[m.toR][m.toC];
+          if (dest && dest.color === 0) {
+            score += (VALUES[dest.type] || 0) * 10;
+          }
+          // 成る手への加点
+          if (!m.drop && m.toR >= 6) {
+            const p = board[m.from.r][m.from.c];
+            if (PROMOTE_MAP[p.type]) score += 15;
+          }
+          // 中央や前方へ進む手を少し優先
+          score += m.toR;
+
+          // 同点時のランダム性
+          score += Math.random() * 2;
+
+          if (score > bestScore) {
+            bestScore = score;
+            selectedMove = m;
           }
         }
       }
 
-      if (!bestMove) {
-        bestMove = moves[Math.floor(Math.random() * moves.length)];
-      }
-
-      executeMove(1, bestMove.from, bestMove.drop, bestMove.toR, bestMove.toC);
+      if (!selectedMove) selectedMove = moves[0];
+      executeMove(1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC);
     }
 
     function getPieceMoves(b, r, c) {
