@@ -1,629 +1,138 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shogi Blunder Checker (WASM Engine)</title>
-<style>
-  :root {
-    --bg-color: #f7f9fa;
-    --card-bg: #ffffff;
-    --border-color: #d1d5db;
-    --board-bg: #e6b87d;
-    --square-border: #b5884d;
-    --accent: #2563eb;
-    --danger: #dc2626;
-    --warning: #d97706;
-  }
-  body {
-    margin: 0;
-    padding: 16px;
-    background-color: var(--bg-color);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #1f2937;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-  .container {
-    max-width: 680px;
-    width: 100%;
-    background: var(--card-bg);
-    border-radius: 8px;
-    padding: 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    box-sizing: border-box;
-  }
-  h1 {
-    font-size: 1.25rem;
-    margin: 0 0 12px 0;
-    text-align: center;
-  }
-  .status-panel {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    padding: 8px 12px;
-    background: #f3f4f6;
-    border-radius: 6px;
-    font-size: 0.875rem;
-  }
-  .alert-box {
-    padding: 10px;
-    border-radius: 6px;
-    margin-bottom: 12px;
-    display: none;
-    font-size: 0.875rem;
-    font-weight: bold;
-  }
-  .alert-danger {
-    background: #fee2e2;
-    color: var(--danger);
-    border: 1px solid #f87171;
-  }
-  .alert-warning {
-    background: #fef3c7;
-    color: var(--warning);
-    border: 1px solid #fbbf24;
-  }
-  .board-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-  .stand {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    min-height: 36px;
-    width: 360px;
-    padding: 6px;
-    background: #eed8b1;
-    border: 1px solid var(--square-border);
-    border-radius: 4px;
-    box-sizing: border-box;
-  }
-  .stand-piece {
-    font-size: 1.1rem;
-    cursor: pointer;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: var(--board-bg);
-    border: 1px solid var(--square-border);
-    user-select: none;
-  }
-  .stand-piece.selected {
-    background: #fed7aa;
-    outline: 2px solid var(--accent);
-  }
-  .board {
-    display: grid;
-    grid-template-columns: repeat(9, 40px);
-    grid-template-rows: repeat(9, 44px);
-    background: var(--board-bg);
-    border: 2px solid #8c5b23;
-  }
-  .cell {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    border: 1px solid var(--square-border);
-    font-size: 1.25rem;
-    font-weight: bold;
-    user-select: none;
-    cursor: pointer;
-  }
-  .cell.selected {
-    background-color: #fcd34d;
-  }
-  .cell.highlight {
-    background-color: #bfdbfe;
-  }
-  .cell.gote-piece {
-    transform: rotate(180deg);
-  }
-  .controls {
-    display: flex;
-    gap: 8px;
-    justify-content: center;
-  }
-  button {
-    padding: 8px 16px;
-    border: none;
-    background: var(--accent);
-    color: white;
-    border-radius: 4px;
-    font-size: 0.875rem;
-    cursor: pointer;
-  }
-  button:disabled {
-    background: #9ca3af;
-    cursor: not-allowed;
-  }
-  .log-box {
-    margin-top: 12px;
-    background: #111827;
-    color: #10b981;
-    font-family: monospace;
-    font-size: 0.75rem;
-    padding: 8px;
-    border-radius: 4px;
-    height: 90px;
-    overflow-y: auto;
-  }
-</style>
-</head>
-<body>
+import subprocess
+import re
+import time
+from typing import Optional, Tuple, Dict, Any
 
-<div class="container">
-  <h1>将棋盤 - エンジン評価型 悪手判定</h1>
+class EngineConnector:
+    """
+    UCI/USIプロトコルに対応した外部思考エンジンを制御するクラス。
+    チェス(Stockfish等)や将棋(やねうら王等)のバイナリを呼び出して評価値を取得します。
+    """
+    def __init__(self, engine_path: str, protocol: str = "uci"):
+        self.engine_path = engine_path
+        self.protocol = protocol.lower()  # "uci" または "usi"
+        self.process: Optional[subprocess.Popen] = None
+        self._start_engine()
 
-  <div class="status-panel">
-    <div id="engine-status">エンジン: 初期化中...</div>
-    <div id="eval-score">評価値: 0</div>
-  </div>
+    def _start_engine(self) -> None:
+        # エンジンプロセスを標準入出力パイプで起動
+        self.process = subprocess.Popen(
+            [self.engine_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        
+        # 初期化コマンドの送信
+        init_cmd = "uci" if self.protocol == "uci" else "usi"
+        ok_response = "uciok" if self.protocol == "uci" else "usiok"
+        
+        self.send_command(init_cmd)
+        self._wait_for_response(ok_response)
+        
+        # 準備完了の確認
+        self.send_command("isready")
+        self._wait_for_response("readyok")
 
-  <div id="alert" class="alert-box"></div>
+    def send_command(self, command: str) -> None:
+        if self.process and self.process.stdin:
+            self.process.stdin.write(f"{command}\n")
+            self.process.stdin.flush()
 
-  <div class="board-container">
-    <div class="stand" id="gote-stand"></div>
-    <div class="board" id="board"></div>
-    <div class="stand" id="sente-stand"></div>
-  </div>
+    def _wait_for_response(self, target: str) -> None:
+        if not self.process or not self.process.stdout:
+            return
+        while True:
+            line = self.process.stdout.readline().strip()
+            if line == target:
+                break
 
-  <div class="controls">
-    <button id="btn-undo">待った (1手戻す)</button>
-    <button id="btn-reset">初手から</button>
-  </div>
+    def evaluate_position(self, moves_str: str = "", search_time_ms: int = 1000) -> Dict[str, Any]:
+        """
+        指定した着手系列（例: 'e2e4 e7e5' や '7g7f 3c3d'）の局面を探索し、
+        評価値と最善手を返します。
+        """
+        if not self.process or not self.process.stdout:
+            raise RuntimeError("エンジンが起動していません。")
 
-  <div class="log-box" id="log-box"></div>
-</div>
+        # 局面のセット
+        if moves_str.strip():
+            self.send_command(f"position startpos moves {moves_str.strip()}")
+        else:
+            self.send_command("position startpos")
 
-<script>
-// --- USI WebAssembly Engine Worker Loader ---
-// ブラウザ内で動作するFairy-Stockfish (Shogi USI対応) WASMをWeb Workerで動的起動
-const workerCode = `
-importScripts('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js');
+        # 思考開始コマンドの送信（指定ミリ秒探索）
+        self.send_command(f"go movetime {search_time_ms}")
 
-// Stockfish/USIエンジンをWorker経由で透過的に中継
-let engine = null;
-try {
-  engine = typeof Stockfish === "function" ? Stockfish() : null;
-} catch (e) {
-  postMessage({ type: 'log', data: 'WASM Worker Init Notice: ' + e.message });
-}
+        latest_score_cp: Optional[int] = None
+        latest_mate: Optional[int] = None
+        bestmove: Optional[str] = None
 
-if (engine) {
-  engine.onmessage = function(event) {
-    postMessage({ type: 'usi_out', data: event.data || event });
-  };
-}
+        # エンジンからの出力を1行ずつ解析
+        while True:
+            line = self.process.stdout.readline().strip()
+            if not line:
+                continue
 
-onmessage = function(e) {
-  const msg = e.data;
-  if (msg.type === 'usi_in') {
-    if (engine && engine.postMessage) {
-      engine.postMessage(msg.data);
-    }
-  }
-};
-`;
+            # 評価値情報行（info depth ... score cp 120 ...）のパース
+            if line.startswith("info") and "score" in line:
+                cp_match = re.search(r"score\s+cp\s+(-?\d+)", line)
+                mate_match = re.search(r"score\s+mate\s+(-?\d+)", line)
+                if cp_match:
+                    latest_score_cp = int(cp_match.group(1))
+                    latest_mate = None
+                elif mate_match:
+                    latest_mate = int(mate_match.group(1))
+                    latest_score_cp = None
 
-class ShogiEngineWrapper {
-  constructor(onLog, onEvalUpdate) {
-    this.onLog = onLog;
-    this.onEvalUpdate = onEvalUpdate;
-    this.worker = null;
-    this.isReady = false;
-    this.currentResolve = null;
-    this.evalHistory = [];
-    this.init();
-  }
+            # 思考完了行（bestmove e7e5 ...）
+            if line.startswith("bestmove"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    bestmove = parts[1]
+                break
 
-  init() {
-    try {
-      const blob = new Blob([workerCode], { type: 'application/javascript' });
-      this.worker = new Worker(URL.createObjectURL(blob));
-      this.worker.onmessage = (e) => this.handleMessage(e.data);
-      this.send("usi");
-      this.send("isready");
-    } catch (err) {
-      this.onLog("Worker起動代替モード (内部評価機): " + err.message);
-      this.isReady = true;
-    }
-  }
-
-  send(cmd) {
-    if (this.worker) {
-      this.worker.postMessage({ type: 'usi_in', data: cmd });
-    }
-    this.onLog("> " + cmd);
-  }
-
-  handleMessage(msg) {
-    if (msg.type === 'log') {
-      this.onLog(msg.data);
-      return;
-    }
-    const line = msg.data;
-    if (typeof line !== 'string') return;
-
-    if (line === 'readyok') {
-      this.isReady = true;
-      this.onLog("エンジン準備完了");
-    }
-
-    // USIプロトコルのinfo行解析 (評価値・最善手)
-    if (line.startsWith('info') && line.includes('score cp')) {
-      const parts = line.split(' ');
-      const cpIdx = parts.indexOf('cp');
-      if (cpIdx !== -1 && parts[cpIdx + 1]) {
-        const cp = parseInt(parts[cpIdx + 1], 10);
-        this.onEvalUpdate(cp);
-      }
-    }
-
-    if (line.startsWith('bestmove')) {
-      const parts = line.split(' ');
-      const move = parts[1];
-      if (this.currentResolve) {
-        this.currentResolve(move);
-        this.currentResolve = null;
-      }
-    }
-  }
-
-  // 指し手局面の探索評価を計算 (ミリ秒指定または深さ指定)
-  async evaluatePosition(moveHistory, moveTimeMs = 400) {
-    if (!this.isReady) {
-      return this.fallbackEvaluate(moveHistory);
-    }
-
-    return new Promise((resolve) => {
-      this.currentResolve = resolve;
-      const movesStr = moveHistory.length > 0 ? " moves " + moveHistory.join(" ") : "";
-      this.send("position startpos" + movesStr);
-      this.send("go movetime " + moveTimeMs);
-      
-      // タイムアウト時のフェイルセーフ
-      setTimeout(() => {
-        if (this.currentResolve) {
-          this.currentResolve(null);
-          this.currentResolve = null;
+        return {
+            "score_cp": latest_score_cp,  # センティポーン単位（100 = ポーン/歩1枚分の有利）
+            "mate_in": latest_mate,       # 詰みまでの手数（詰み局面でない場合はNone）
+            "bestmove": bestmove          # 最善手
         }
-      }, moveTimeMs + 200);
-    });
-  }
 
-  // WASMロード制限環境下での静的利得＋簡易ミニマックス代替評価
-  fallbackEvaluate(moves) {
-    // 駒交換、取り返し、王手放置等を計算するローカル評価ロジック
-    return new Promise((resolve) => {
-      resolve("local_eval_complete");
-    });
-  }
-}
+    def quit(self) -> None:
+        if self.process:
+            self.send_command("quit")
+            self.process.terminate()
+            self.process.wait()
 
-// --- 盤面表現・駒・着手管理 ---
-const PIECE_VALUES = {
-  'FU': 100, 'KY': 300, 'KE': 400, 'GI': 500, 'KI': 600,
-  'KA': 800, 'HI': 1000, 'OU': 15000,
-  'TO': 600, 'NY': 600, 'NK': 600, 'NG': 600, 'UM': 1000, 'RY': 1200
-};
 
-const KANJI_MAP = {
-  'FU': '歩', 'KY': '香', 'KE': '桂', 'GI': '銀', 'KI': '金',
-  'KA': '角', 'HI': '飛', 'OU': '玉',
-  'TO': 'と', 'NY': '杏', 'NK': '圭', 'NG': '全', 'UM': '馬', 'RY': '竜'
-};
+if __name__ == "__main__":
+    # 使用例：
+    # 1. 外部エンジンの実行ファイルパスを指定（環境に合わせて変更してください）
+    # 例: "./stockfish/stockfish-ubuntu-x86-64-avx2" や "C:/engines/stockfish.exe"
+    ENGINE_PATH = "./stockfish"
+    
+    try:
+        # チェスエンジンの場合: protocol="uci"
+        # 将棋エンジンの場合: protocol="usi"
+        engine = EngineConnector(engine_path=ENGINE_PATH, protocol="uci")
 
-const INITIAL_BOARD = [
-  ['eKY','eKE','eGI','eKI','eOU','eKI','eGI','eKE','eKY'],
-  [''   ,'eHI',''   ,''   ,''   ,''   ,''   ,'eKA',''   ],
-  ['eFU','eFU','eFU','eFU','eFU','eFU','eFU','eFU','eFU'],
-  [''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ],
-  [''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ],
-  [''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ,''   ],
-  ['sFU','sFU','sFU','sFU','sFU','sFU','sFU','sFU','sFU'],
-  [''   ,'sKA',''   ,''   ,''   ,''   ,''   ,'sHI',''   ],
-  ['sKY','sKE','sGI','sKI','sOU','sKI','sGI','sKE','sKY']
-];
+        print("エンジンを初期化しました。初期局面から1手目 'e2e4' 後の評価値を計算します...")
+        
+        # 初期局面から 'e2e4' が指された局面の評価（探索時間1.5秒）
+        result = engine.evaluate_position(moves_str="e2e4", search_time_ms=1500)
 
-class ShogiGame {
-  constructor() {
-    this.board = JSON.parse(JSON.stringify(INITIAL_BOARD));
-    this.senteStand = [];
-    this.goteStand = [];
-    this.turn = 's'; // 's': 先手, 'e': 後手
-    this.moveHistory = [];
-    this.usiMoves = [];
-    this.evalHistory = [0]; // 先手視点cp
-    this.selected = null;
-  }
+        print("\n--- 解析結果 ---")
+        if result["score_cp"] is not None:
+            print(f"評価値 (先手視点): {result['score_cp']} cp")
+        elif result["mate_in"] is not None:
+            print(f"詰み: {result['mate_in']} 手詰み")
+            
+        print(f"エンジンの推奨する最善手: {result['bestmove']}")
 
-  reset() {
-    this.board = JSON.parse(JSON.stringify(INITIAL_BOARD));
-    this.senteStand = [];
-    this.goteStand = [];
-    this.turn = 's';
-    this.moveHistory = [];
-    this.usiMoves = [];
-    this.evalHistory = [0];
-    this.selected = null;
-  }
+        engine.quit()
 
-  // 盤面上の全駒価値合計（先手視点）を算出
-  calculateMaterialBalance() {
-    let score = 0;
-    for (let r = 0; r < 9; r++) {
-      for (let c = 0; c < 9; c++) {
-        const piece = this.board[r][c];
-        if (!piece) continue;
-        const side = piece[0];
-        const type = piece.substring(1);
-        const val = PIECE_VALUES[type] || 0;
-        score += (side === 's' ? val : -val);
-      }
-    }
-    for (const p of this.senteStand) score += (PIECE_VALUES[p] || 0) * 1.1; // 持ち駒の加点
-    for (const p of this.goteStand) score -= (PIECE_VALUES[p] || 0) * 1.1;
-    return score;
-  }
-
-  // 手の適用
-  makeMove(from, to, promote = false) {
-    let captured = null;
-    let movedPiece = '';
-
-    if (from.stand) {
-      // 持ち駒を打つ
-      const stand = this.turn === 's' ? this.senteStand : this.goteStand;
-      const idx = stand.indexOf(from.piece);
-      if (idx === -1) return false;
-      stand.splice(idx, 1);
-      this.board[to.r][to.c] = this.turn + from.piece;
-      movedPiece = from.piece;
-    } else {
-      // 盤上の駒を移動
-      const src = this.board[from.r][from.c];
-      captured = this.board[to.r][to.c];
-      let pType = src.substring(1);
-
-      if (promote) {
-        const promMap = { 'FU':'TO', 'KY':'NY', 'KE':'NK', 'GI':'NG', 'KA':'UM', 'HI':'RY' };
-        if (promMap[pType]) pType = promMap[pType];
-      }
-
-      this.board[to.r][to.c] = this.turn + pType;
-      this.board[from.r][from.c] = '';
-      movedPiece = pType;
-
-      // 取った駒を持ち駒に追加（成駒は元に戻す）
-      if (captured) {
-        let capType = captured.substring(1);
-        const unPromMap = { 'TO':'FU', 'NY':'KY', 'NK':'KE', 'NG':'GI', 'UM':'KA', 'RY':'HI' };
-        if (unPromMap[capType]) capType = unPromMap[capType];
-        if (this.turn === 's') this.senteStand.push(capType);
-        else this.goteStand.push(capType);
-      }
-    }
-
-    // USI表記への変換 (例: 7g7f)
-    const colNames = ['9','8','7','6','5','4','3','2','1'];
-    const rowNames = ['a','b','c','d','e','f','g','h','i'];
-    let usi = "";
-    if (from.stand) {
-      usi = from.piece + "*" + colNames[to.c] + rowNames[to.r];
-    } else {
-      usi = colNames[from.c] + rowNames[from.r] + colNames[to.c] + rowNames[to.r] + (promote ? "+" : "");
-    }
-    this.usiMoves.push(usi);
-
-    this.moveHistory.push({ from, to, captured, movedPiece, promote });
-    this.turn = this.turn === 's' ? 'e' : 's';
-    return true;
-  }
-}
-
-// --- UIコントローラー・悪手判定ロジック ---
-const game = new ShogiGame();
-const logBox = document.getElementById('log-box');
-const alertBox = document.getElementById('alert');
-const engineStatus = document.getElementById('engine-status');
-const evalScoreEl = document.getElementById('eval-score');
-
-function addLog(msg) {
-  const line = document.createElement('div');
-  line.textContent = msg;
-  logBox.appendChild(line);
-  logBox.scrollTop = logBox.scrollHeight;
-}
-
-let latestEngineScore = 0;
-const engine = new ShogiEngineWrapper(addLog, (cp) => {
-  latestEngineScore = cp;
-  evalScoreEl.textContent = "評価値: " + (cp > 0 ? "+" + cp : cp);
-});
-
-function renderBoard() {
-  const boardEl = document.getElementById('board');
-  boardEl.innerHTML = '';
-
-  for (let r = 0; r < 9; r++) {
-    for (let c = 0; c < 9; c++) {
-      const cell = document.createElement('div');
-      cell.className = 'cell';
-      cell.dataset.r = r;
-      cell.dataset.c = c;
-
-      const piece = game.board[r][c];
-      if (piece) {
-        const side = piece[0];
-        const type = piece.substring(1);
-        cell.textContent = KANJI_MAP[type] || type;
-        if (side === 'e') cell.classList.add('gote-piece');
-      }
-
-      if (game.selected && !game.selected.stand && game.selected.r === r && game.selected.c === c) {
-        cell.classList.add('selected');
-      }
-
-      cell.addEventListener('click', () => onCellClick(r, c));
-      boardEl.appendChild(cell);
-    }
-  }
-
-  // 駒台の描画
-  renderStand('sente-stand', game.senteStand, 's');
-  renderStand('gote-stand', game.goteStand, 'e');
-}
-
-function renderStand(elementId, pieces, side) {
-  const standEl = document.getElementById(elementId);
-  standEl.innerHTML = '';
-  pieces.forEach((p, idx) => {
-    const el = document.createElement('div');
-    el.className = 'stand-piece';
-    el.textContent = KANJI_MAP[p] || p;
-    if (game.selected && game.selected.stand && game.selected.side === side && game.selected.pieceIdx === idx) {
-      el.classList.add('selected');
-    }
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (game.turn !== side) return;
-      game.selected = { stand: true, side, pieceIdx: idx, piece: p };
-      renderBoard();
-    });
-    standEl.appendChild(el);
-  });
-}
-
-function showAlert(text, level = 'danger') {
-  alertBox.textContent = text;
-  alertBox.className = 'alert-box alert-' + level;
-  alertBox.style.display = 'block';
-}
-
-function clearAlert() {
-  alertBox.style.display = 'none';
-  alertBox.textContent = '';
-}
-
-// 手番直前の評価値と着手後の評価値を比較して真の悪手（Blunder）を検出
-async function processMove(from, to) {
-  clearAlert();
-
-  // 着手前の先手視点評価値を記録
-  const preScore = game.calculateMaterialBalance();
-
-  // 成り判定（3段目以内への進入または脱出）
-  let promote = false;
-  if (!from.stand) {
-    const srcPiece = game.board[from.r][from.c].substring(1);
-    const canPromote = ['FU','KY','KE','GI','KA','HI'].includes(srcPiece);
-    const inZone = (game.turn === 's' && (to.r <= 2 || from.r <= 2)) ||
-                   (game.turn === 'e' && (to.r >= 6 || from.r >= 6));
-    if (canPromote && inZone) {
-      promote = confirm("成りますか？");
-    }
-  }
-
-  const movingTurn = game.turn;
-  const ok = game.makeMove(from, to, promote);
-  if (!ok) return;
-
-  game.selected = null;
-  renderBoard();
-
-  // エンジンによる局面評価（WASM探索）
-  engineStatus.textContent = "エンジン: 局面解析中...";
-  await engine.evaluatePosition(game.usiMoves, 450);
-  engineStatus.textContent = "エンジン: 稼働中";
-
-  // 着手後の評価値計算
-  const postScore = game.calculateMaterialBalance();
-
-  // 手番側にとっての純粋損得差分を計算
-  const deltaMaterial = movingTurn === 's' ? (postScore - preScore) : (preScore - postScore);
-
-  // 【真の悪手判定ロジック】
-  // 1. 取り返しや利得がある場合（deltaMaterial >= 0）は絶対に悪手警告を出さない
-  // 2. 相手の利きに飛び込み、かつ取り返しや対価がない大損失（500点以上の暴落）のみ検出
-  if (deltaMaterial <= -500) {
-    showAlert("大悪手（Blunder）: 駒を無条件に失い、評価値が大幅に下落しました。", "danger");
-  } else if (deltaMaterial <= -250) {
-    showAlert("疑問手（Inaccuracy）: 駒損または好手を見逃している可能性があります。", "warning");
-  } else if (deltaMaterial >= 300) {
-    showAlert("好手（Great Move）: 相手の駒を適切に召し捕り、形勢が向上しました。", "warning");
-    alertBox.style.background = "#dcfce7";
-    alertBox.style.color = "#15803d";
-    alertBox.style.borderColor = "#86efac";
-  }
-}
-
-function onCellClick(r, c) {
-  const clickedPiece = game.board[r][c];
-
-  if (game.selected) {
-    // 移動先の決定
-    if (game.selected.stand) {
-      // 駒打ち
-      if (!clickedPiece) {
-        processMove(game.selected, { r, c });
-      } else {
-        game.selected = null;
-        renderBoard();
-      }
-    } else {
-      // 盤上の移動
-      if (game.selected.r === r && game.selected.c === c) {
-        game.selected = null;
-        renderBoard();
-        return;
-      }
-      // 自駒の再選択
-      if (clickedPiece && clickedPiece[0] === game.turn) {
-        game.selected = { stand: false, r, c };
-        renderBoard();
-        return;
-      }
-      processMove({ stand: false, r: game.selected.r, c: game.selected.c }, { r, c });
-    }
-  } else {
-    // 選択開始
-    if (clickedPiece && clickedPiece[0] === game.turn) {
-      game.selected = { stand: false, r, c };
-      renderBoard();
-    }
-  }
-}
-
-document.getElementById('btn-reset').addEventListener('click', () => {
-  game.reset();
-  clearAlert();
-  renderBoard();
-  engine.send("position startpos");
-});
-
-document.getElementById('btn-undo').addEventListener('click', () => {
-  if (game.moveHistory.length === 0) return;
-  game.moveHistory.pop();
-  game.usiMoves.pop();
-  
-  // 簡易復元（初手から再生）
-  const savedMoves = [...game.moveHistory];
-  game.reset();
-  for (const m of savedMoves) {
-    game.makeMove(m.from, m.to, m.promote);
-  }
-  clearAlert();
-  renderBoard();
-});
-
-// 初期描画
-renderBoard();
-</script>
-</body>
-</html>
+    except FileNotFoundError:
+        print(f"指定されたパスにエンジンが見つかりません: {ENGINE_PATH}")
+        print("エンジンのバイナリをダウンロードし、実行パスを正しく設定してください。")
