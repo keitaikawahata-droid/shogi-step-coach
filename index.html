@@ -4,15 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>将棋ステップコーチ</title>
-  <!-- 将棋のルール判定ライブラリ -->
-  <script src="https://cdn.jsdelivr.net/npm/shogi.js@0.4.0/dist/shogi.min.js"></script>
   <style>
     :root {
-      --board-bg: #e6c594;
-      --cell-border: #7d5836;
-      --highlight-select: #ffe066;
-      --highlight-move: #a9e34b;
-      --highlight-danger: #ff8787;
+      --board-bg: #e5c088;
+      --cell-border: #6d4622;
+      --selected: #ffeb3b;
+      --movable: #69db7c;
+      --text-color: #212529;
     }
     body {
       margin: 0;
@@ -20,48 +18,49 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      background-color: #2b2d42;
+      background-color: #1e1e24;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      color: #edf2f4;
+      color: #f8f9fa;
       user-select: none;
     }
     h1 {
       font-size: 1.1rem;
-      margin: 5px 0 10px 0;
+      margin: 4px 0 8px 0;
     }
     #app-container {
       width: 100%;
-      max-width: 380px;
+      max-width: 360px;
       display: flex;
       flex-direction: column;
       align-items: center;
       position: relative;
     }
-    .stand-area {
-      width: 340px;
-      min-height: 36px;
-      background: #3d405b;
+    .stand {
+      width: 342px;
+      min-height: 38px;
+      background: #2b2d42;
       border-radius: 6px;
       margin: 4px 0;
       display: flex;
       align-items: center;
-      padding: 2px 8px;
+      padding: 4px 8px;
       box-sizing: border-box;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
     }
     .stand-label {
-      color: #aaa;
+      color: #adb5bd;
       margin-right: 8px;
       font-size: 0.75rem;
+      white-space: nowrap;
     }
-    .stand-pieces {
+    .stand-list {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
     }
     .stand-piece {
       background: var(--board-bg);
-      color: #111;
+      color: var(--text-color);
       padding: 2px 6px;
       border-radius: 4px;
       font-weight: bold;
@@ -69,97 +68,99 @@
       border: 1px solid var(--cell-border);
     }
     .stand-piece.selected {
-      background-color: var(--highlight-select);
+      background: var(--selected);
       outline: 2px solid #f59f00;
     }
     #board {
       display: grid;
       grid-template-columns: repeat(9, 1fr);
       grid-template-rows: repeat(9, 1fr);
-      width: 340px;
-      height: 340px;
-      border: 2px solid #4a2c11;
+      width: 342px;
+      height: 342px;
+      border: 2px solid var(--cell-border);
       background-color: var(--board-bg);
-      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     }
     .cell {
       border: 0.5px solid var(--cell-border);
       display: flex;
       justify-content: center;
       align-items: center;
-      font-size: 1.1rem;
+      font-size: 1.15rem;
       font-weight: bold;
+      color: var(--text-color);
       cursor: pointer;
       position: relative;
+      box-sizing: border-box;
     }
     .cell.selected {
-      background-color: var(--highlight-select);
+      background-color: var(--selected);
     }
     .cell.movable {
-      background-color: var(--highlight-move);
+      background-color: var(--movable);
     }
     .gote {
       transform: rotate(180deg);
-      color: #8b0000;
+      color: #9b111e;
     }
     .sente {
       color: #111111;
     }
     #status-box {
-      margin-top: 10px;
+      margin-top: 8px;
       padding: 8px 12px;
-      width: 316px;
-      background-color: #3d405b;
+      width: 318px;
+      background-color: #2b2d42;
       border-radius: 6px;
       text-align: center;
       font-size: 0.85rem;
       min-height: 20px;
     }
-    /* 悪手ブレーキ用モーダル（警告画面） */
     #brake-modal {
       display: none;
       position: absolute;
-      top: 60px;
-      width: 320px;
-      background: #fff;
-      color: #111;
+      top: 50px;
+      width: 310px;
+      background: #ffffff;
+      color: #212529;
       padding: 16px;
       border-radius: 10px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
       border: 3px solid #e03131;
       text-align: center;
       z-index: 100;
+      box-sizing: border-box;
     }
     #brake-modal h2 {
-      margin: 0 0 8px 0;
+      margin: 0 0 6px 0;
       color: #c92a2a;
       font-size: 1.1rem;
     }
     #brake-modal p {
-      margin: 0 0 14px 0;
+      margin: 0 0 12px 0;
       font-size: 0.85rem;
       line-height: 1.4;
     }
-    .modal-buttons {
+    .modal-btns {
       display: flex;
       gap: 8px;
       justify-content: center;
     }
     .btn {
       border: none;
-      padding: 8px 12px;
+      padding: 8px 14px;
       border-radius: 6px;
       font-weight: bold;
       cursor: pointer;
       font-size: 0.8rem;
     }
-    .btn-rollback {
+    .btn-undo {
       background: #e03131;
-      color: #fff;
+      color: #ffffff;
     }
-    .btn-ignore {
+    .btn-continue {
       background: #ced4da;
-      color: #333;
+      color: #343a40;
     }
   </style>
 </head>
@@ -169,325 +170,431 @@
     <h1>将棋ステップコーチ</h1>
 
     <!-- 後手（CPU）持ち駒 -->
-    <div class="stand-area">
+    <div class="stand">
       <span class="stand-label">CPU持ち駒</span>
-      <div id="gote-stand" class="stand-pieces">なし</div>
+      <div id="gote-stand" class="stand-list">なし</div>
     </div>
 
-    <!-- 盤面 -->
+    <!-- 将棋盤 -->
     <div id="board"></div>
 
     <!-- 先手（プレイヤー）持ち駒 -->
-    <div class="stand-area">
+    <div class="stand">
       <span class="stand-label">自持ち駒</span>
-      <div id="sente-stand" class="stand-pieces">なし</div>
+      <div id="sente-stand" class="stand-list">なし</div>
     </div>
 
-    <!-- 状態表示 -->
-    <div id="status-box">あなたの番です。駒を動かしてください</div>
+    <!-- ガイダンスメッセージ -->
+    <div id="status-box">あなたの手番です。動かす駒を選んでください</div>
 
-    <!-- 悪手ブレーキ警告ポップアップ -->
+    <!-- 悪手ブレーキ表示モーダル -->
     <div id="brake-modal">
       <h2>⚠️ 悪手ブレーキ作動！</h2>
-      <p id="brake-reason">その手を指すと駒をタダ取りされる危険があります。</p>
-      <div class="modal-buttons">
-        <button class="btn btn-rollback" onclick="rollbackMove()">待った（巻き戻す）</button>
-        <button class="btn btn-ignore" onclick="ignoreBrake()">このまま進める</button>
+      <p id="brake-msg">その手は相手に駒をタダ取りされます。</p>
+      <div class="modal-btns">
+        <button class="btn btn-undo" onclick="undoMove()">待った（巻き戻す）</button>
+        <button class="btn btn-continue" onclick="continueMove()">強行する</button>
       </div>
     </div>
   </div>
 
   <script>
-    const pieceKanji = {
-      'FU': '歩', 'KY': '香', 'KE': '桂', 'GI': '銀', 'KI': '金', 'KA': '角', 'HI': '飛', 'OU': '玉',
-      'TO': 'と', 'NY': '成香', 'NK': '成桂', 'NG': '成銀', 'UM': '馬', 'RY': '竜'
+    // 駒の漢字・価値マッピング
+    const KANJI = {
+      FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
+      TO: 'と', NY: '成香', NK: '成桂', NG: '成銀', UM: '馬', RY: '竜'
     };
+    const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
+    const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
+    const VALUES = { FU: 1, KY: 3, KE: 4, GI: 5, KI: 6, KA: 8, HI: 10, OU: 100, TO: 6, NY: 6, NK: 6, NG: 6, UM: 10, RY: 12 };
 
-    const pieceValues = {
-      'FU': 1, 'KY': 3, 'KE': 4, 'GI': 5, 'KI': 6, 'KA': 8, 'HI': 10, 'OU': 100,
-      'TO': 6, 'NY': 6, 'NK': 6, 'NG': 6, 'UM': 10, 'RY': 12
-    };
-
-    let shogi = new Shogi();
-    shogi.initialize();
-
-    let historyState = null; // 巻き戻し用の1手前データ
+    // ゲーム状態
+    let board = [];
+    let hands = { 0: {}, 1: {} }; // 0: 先手, 1: 後手
+    let turn = 0; // 0: 先手, 1: 後手
     let selectedSquare = null;
-    let selectedDropPiece = null;
-    let legalMovesForSelected = [];
-    let isCpuThinking = false;
+    let selectedDrop = null;
+    let legalMoves = [];
+    let isCpuBusy = false;
+    let backupState = null;
 
-    const boardElement = document.getElementById('board');
-    const statusBox = document.getElementById('status-box');
-    const brakeModal = document.getElementById('brake-modal');
-    const brakeReason = document.getElementById('brake-reason');
+    // 初期配置の生成
+    function initGame() {
+      board = Array(9).fill(null).map(() => Array(9).fill(null));
+      hands = { 0: {}, 1: {} };
+      turn = 0;
 
-    function draw() {
-      drawBoard();
-      drawStands();
+      // 後手 (1)
+      const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
+      board[1][1] = { type: 'HI', color: 1 };
+      board[1][7] = { type: 'KA', color: 1 };
+      for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
+
+      // 先手 (0)
+      for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
+      board[7][1] = { type: 'KA', color: 0 };
+      board[7][7] = { type: 'HI', color: 0 };
+      const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
+
+      render();
     }
 
-    function drawBoard() {
-      boardElement.innerHTML = '';
-      for (let y = 1; y <= 9; y++) {
-        for (let x = 9; x >= 1; x--) {
+    // 画面描画
+    function render() {
+      const boardEl = document.getElementById('board');
+      boardEl.innerHTML = '';
+
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
           const cell = document.createElement('div');
           cell.className = 'cell';
 
-          const piece = shogi.get(x, y);
+          const piece = board[r][c];
           if (piece) {
-            cell.textContent = pieceKanji[piece.kind] || piece.kind;
+            cell.textContent = KANJI[piece.type];
             cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
           }
 
-          if (selectedSquare && selectedSquare.x === x && selectedSquare.y === y) {
+          if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) {
             cell.classList.add('selected');
           }
 
-          const canMove = legalMovesForSelected.some(m => m.to.x === x && m.to.y === y);
-          if (canMove) {
+          const isTarget = legalMoves.some(m => m.r === r && m.c === c);
+          if (isTarget) {
             cell.classList.add('movable');
           }
 
-          cell.addEventListener('click', () => onCellClick(x, y));
-          boardElement.appendChild(cell);
+          cell.addEventListener('click', () => onCellClick(r, c));
+          boardEl.appendChild(cell);
         }
       }
+
+      renderStand('sente-stand', 0);
+      renderStand('gote-stand', 1);
     }
 
-    function drawStands() {
-      const goteStand = document.getElementById('gote-stand');
-      const senteStand = document.getElementById('sente-stand');
+    function renderStand(elId, color) {
+      const el = document.getElementById(elId);
+      el.innerHTML = '';
+      let hasAny = false;
 
-      renderStand(goteStand, 1);
-      renderStand(senteStand, 0);
-    }
-
-    function renderStand(container, color) {
-      container.innerHTML = '';
-      const pieces = shogi.getHandsSummary(color);
-      let count = 0;
-
-      for (const kind in pieces) {
-        if (pieces[kind] > 0) {
-          count++;
+      for (const type in hands[color]) {
+        const count = hands[color][type];
+        if (count > 0) {
+          hasAny = true;
           const chip = document.createElement('div');
           chip.className = 'stand-piece';
-          chip.textContent = `${pieceKanji[kind]}×${pieces[kind]}`;
+          chip.textContent = `${KANJI[type]}×${count}`;
 
-          if (color === 0 && selectedDropPiece === kind) {
+          if (color === 0 && selectedDrop === type) {
             chip.classList.add('selected');
           }
 
-          if (color === 0 && !isCpuThinking) {
-            chip.addEventListener('click', () => selectDropPiece(kind));
+          if (color === 0 && !isCpuBusy && turn === 0) {
+            chip.addEventListener('click', () => onSelectDrop(type));
           }
-          container.appendChild(chip);
+          el.appendChild(chip);
         }
       }
-      if (count === 0) container.textContent = 'なし';
+      if (!hasAny) el.textContent = 'なし';
     }
 
-    function selectDropPiece(kind) {
+    // 駒選択・移動処理
+    function onSelectDrop(type) {
       selectedSquare = null;
-      selectedDropPiece = kind;
-      legalMovesForSelected = getLegalDrops(kind);
-      statusBox.textContent = `持ち駒の ${pieceKanji[kind]} を打つマスを選んでください`;
-      draw();
+      selectedDrop = type;
+      legalMoves = getDropMoves(0, type);
+      document.getElementById('status-box').textContent = `${KANJI[type]} を打つマスを選んでください`;
+      render();
     }
 
-    function onCellClick(x, y) {
-      if (isCpuThinking || shogi.turn !== 0) return;
+    function onCellClick(r, c) {
+      if (isCpuBusy || turn !== 0) return;
 
-      const targetMove = legalMovesForSelected.find(m => m.to.x === x && m.to.y === y);
+      const targetMove = legalMoves.find(m => m.r === r && m.c === c);
 
-      // 移動または持ち駒を打つ処理
+      // 移動実行
       if (targetMove) {
-        executePlayerMove(targetMove);
+        saveState();
+        executeMove(0, selectedSquare, selectedDrop, r, c);
+        selectedSquare = null;
+        selectedDrop = null;
+        legalMoves = [];
+        render();
+
+        // 悪手判定
+        const blunderMsg = checkBlunder(r, c);
+        if (blunderMsg) {
+          showBrake(blunderMsg);
+          return;
+        }
+
+        passTurnToCpu();
         return;
       }
 
-      // 盤上の駒を選択
-      const piece = shogi.get(x, y);
+      // 盤上の自分の駒を選択
+      const piece = board[r][c];
       if (piece && piece.color === 0) {
-        selectedDropPiece = null;
-        selectedSquare = { x, y };
-        legalMovesForSelected = getLegalMovesFrom(x, y);
-        statusBox.textContent = `${pieceKanji[piece.kind]} を選択中`;
-        draw();
+        selectedDrop = null;
+        selectedSquare = { r, c };
+        legalMoves = getPieceMoves(board, r, c);
+        document.getElementById('status-box').textContent = `${KANJI[piece.type]} を選択中`;
+        render();
       } else {
         selectedSquare = null;
-        selectedDropPiece = null;
-        legalMovesForSelected = [];
-        draw();
+        selectedDrop = null;
+        legalMoves = [];
+        render();
       }
     }
 
-    function executePlayerMove(move) {
-      // 1手前をバックアップ
-      historyState = shogi.toSFEN();
+    // 移動実行ロジック
+    function executeMove(color, from, dropType, toR, toC) {
+      if (dropType) {
+        board[toR][toC] = { type: dropType, color: color };
+        hands[color][dropType]--;
+      } else {
+        const piece = board[from.r][from.c];
+        const dest = board[toR][toC];
 
-      try {
-        if (move.drop) {
-          shogi.drop(move.to.x, move.to.y, move.drop);
-        } else {
-          // 3段目以内に入ったら自動で成る（簡易仕様）
-          const canPromote = (move.to.y <= 3 || selectedSquare.y <= 3);
-          shogi.move(selectedSquare.x, selectedSquare.y, move.to.x, move.to.y, canPromote);
+        // 駒を取る
+        if (dest) {
+          const raw = RAW_MAP[dest.type] || dest.type;
+          hands[color][raw] = (hands[color][raw] || 0) + 1;
         }
-      } catch (e) {
-        statusBox.textContent = 'エラーが発生しました';
-        return;
+
+        // 成り判定（3段目以内への侵入・移動で成る）
+        let newType = piece.type;
+        const inEnemyTerritory = color === 0 ? (toR <= 2 || from.r <= 2) : (toR >= 6 || from.r >= 6);
+        if (PROMOTE_MAP[piece.type] && inEnemyTerritory) {
+          newType = PROMOTE_MAP[piece.type];
+        }
+
+        board[toR][toC] = { type: newType, color: color };
+        board[from.r][from.c] = null;
       }
-
-      selectedSquare = null;
-      selectedDropPiece = null;
-      legalMovesForSelected = [];
-      draw();
-
-      // 悪手ブレーキ判定
-      const blunder = detectBlunder(move.to.x, move.to.y);
-      if (blunder) {
-        triggerBrake(blunder);
-        return;
-      }
-
-      // 問題なければCPUの手番へ
-      proceedCpuTurn();
     }
 
-    // 悪手検出（初歩：動かした駒が次の相手の合法手で即座にタダ取りされるか）
-    function detectBlunder(toX, toY) {
-      const movedPiece = shogi.get(toX, toY);
-      if (!movedPiece) return null;
+    // 悪手ブレーキ（初歩判定：動かした駒が即座に相手にタダ取りされるか）
+    function checkBlunder(toR, toC) {
+      const piece = board[toR][toC];
+      if (!piece || VALUES[piece.type] < 5) return null; // 歩や香・桂以外の主要駒を検知
 
-      // 飛車、角、金、銀などの主要駒を突っ込ませた場合
-      const val = pieceValues[movedPiece.kind] || 0;
-      if (val < 5) return null; // 歩などは対象外
-
-      // 相手のすべての合法手の中に、このマスを取る手があるかチェック
-      const opponentMoves = getAllLegalMoves(1);
-      const isTargeted = opponentMoves.some(m => m.to.x === toX && m.to.y === toY);
+      const oppMoves = getAllMoves(board, 1);
+      const isTargeted = oppMoves.some(m => m.toR === toR && m.toC === toC);
 
       if (isTargeted) {
-        return `【悪手警告】指したばかりの ${pieceKanji[movedPiece.kind]} が相手の利きに入っています！タダ取りされる可能性が高いです。`;
+        return `【悪手警告】指したばかりの ${KANJI[piece.type]} が相手の利きに入っています！タダ取りされてしまいます。`;
       }
       return null;
     }
 
-    function triggerBrake(reason) {
-      brakeReason.textContent = reason;
-      brakeModal.style.display = 'block';
+    function showBrake(msg) {
+      document.getElementById('brake-msg').textContent = msg;
+      document.getElementById('brake-modal').style.display = 'block';
     }
 
-    function rollbackMove() {
-      if (historyState) {
-        shogi.initializeFromSFEN(historyState);
-        historyState = null;
+    function undoMove() {
+      if (backupState) {
+        board = JSON.parse(backupState.board);
+        hands = JSON.parse(backupState.hands);
+        turn = 0;
       }
-      brakeModal.style.display = 'none';
-      statusBox.textContent = '手を巻き戻しました。安全な手を考えましょう！';
-      draw();
+      document.getElementById('brake-modal').style.display = 'none';
+      document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を考えましょう！';
+      render();
     }
 
-    function ignoreBrake() {
-      brakeModal.style.display = 'none';
-      statusBox.textContent = 'そのまま続行します。';
-      proceedCpuTurn();
+    function continueMove() {
+      document.getElementById('brake-modal').style.display = 'none';
+      document.getElementById('status-box').textContent = 'そのまま続行します。';
+      passTurnToCpu();
     }
 
-    function proceedCpuTurn() {
-      isCpuThinking = true;
-      statusBox.textContent = '相手（CPU）が考えています...';
+    function saveState() {
+      backupState = {
+        board: JSON.stringify(board),
+        hands: JSON.stringify(hands)
+      };
+    }
+
+    function passTurnToCpu() {
+      turn = 1;
+      isCpuBusy = true;
+      document.getElementById('status-box').textContent = '相手（CPU）が考えています...';
 
       setTimeout(() => {
-        cpuPlay();
-        isCpuThinking = false;
-        statusBox.textContent = 'あなたの番です';
-        draw();
+        playCpuTurn();
+        turn = 0;
+        isCpuBusy = false;
+        document.getElementById('status-box').textContent = 'あなたの番です';
+        render();
       }, 700);
     }
 
-    // 簡易CPU思考ロジック
-    function cpuPlay() {
-      const moves = getAllLegalMoves(1);
+    // 簡易CPUロジック
+    function playCpuTurn() {
+      const moves = getAllMoves(board, 1);
       if (moves.length === 0) {
         alert('詰みです！あなたの勝ちです！');
         return;
       }
 
-      // 1. 相手（プレイヤー）の駒を取れる手があれば最優先で指す
+      // 1. 取れる駒がある手を最優先（価値の高い駒を狙う）
       let bestMove = null;
-      let maxValue = 0;
+      let maxVal = -1;
 
       for (const m of moves) {
-        const dest = shogi.get(m.to.x, m.to.y);
-        if (dest && dest.color === 0) {
-          const val = pieceValues[dest.kind] || 0;
-          if (val > maxValue) {
-            maxValue = val;
+        const target = board[m.toR][m.toC];
+        if (target && target.color === 0) {
+          const val = VALUES[target.type] || 0;
+          if (val > maxVal) {
+            maxVal = val;
             bestMove = m;
           }
         }
       }
 
-      // 2. 取れる駒がなければランダムに前進
+      // 2. なければランダムに前進
       if (!bestMove) {
         bestMove = moves[Math.floor(Math.random() * moves.length)];
       }
 
-      if (bestMove.drop) {
-        shogi.drop(bestMove.to.x, bestMove.to.y, bestMove.drop);
-      } else {
-        const canPromote = (bestMove.to.y >= 7 || bestMove.from.y >= 7);
-        shogi.move(bestMove.from.x, bestMove.from.y, bestMove.to.x, bestMove.to.y, canPromote);
-      }
+      executeMove(1, bestMove.from, bestMove.drop, bestMove.toR, bestMove.toC);
     }
 
-    function getLegalMovesFrom(fromX, fromY) {
-      const validMoves = [];
-      for (let ty = 1; ty <= 9; ty++) {
-        for (let tx = 9; tx >= 1; tx--) {
-          try {
-            const clone = new Shogi();
-            clone.initializeFromSFEN(shogi.toSFEN());
-            clone.move(fromX, fromY, tx, ty, false);
-            validMoves.push({ from: { x: fromX, y: fromY }, to: { x: tx, y: ty } });
-          } catch (e) {}
+    // 駒ごとの移動ルール定義
+    function getPieceMoves(b, r, c) {
+      const piece = b[r][c];
+      if (!piece) return [];
+      const color = piece.color;
+      const fwd = color === 0 ? -1 : 1; // 前進方向
+      const moves = [];
+
+      function add(nr, nc) {
+        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) return false;
+        const target = b[nr][nc];
+        if (!target) {
+          moves.push({ r: nr, c: nc });
+          return true; // 空きマスならスライド継続
+        }
+        if (target.color !== color) {
+          moves.push({ r: nr, c: nc }); // 相手の駒を取れる
+        }
+        return false; // 駒にぶつかったらスライド停止
+      }
+
+      function slide(dr, dc) {
+        let nr = r + dr;
+        let nc = c + dc;
+        while (add(nr, nc)) {
+          nr += dr;
+          nc += dc;
         }
       }
-      return validMoves;
-    }
 
-    function getLegalDrops(kind) {
-      const validDrops = [];
-      for (let ty = 1; ty <= 9; ty++) {
-        for (let tx = 9; tx >= 1; tx--) {
-          try {
-            const clone = new Shogi();
-            clone.initializeFromSFEN(shogi.toSFEN());
-            clone.drop(tx, ty, kind);
-            validDrops.push({ to: { x: tx, y: ty }, drop: kind });
-          } catch (e) {}
-        }
-      }
-      return validDrops;
-    }
-
-    function getAllLegalMoves(color) {
-      const all = [];
-      for (let y = 1; y <= 9; y++) {
-        for (let x = 9; x >= 1; x--) {
-          const p = shogi.get(x, y);
-          if (p && p.color === color) {
-            all.push(...getLegalMovesFrom(x, y));
+      const type = piece.type;
+      if (type === 'FU') {
+        add(r + fwd, c);
+      } else if (type === 'KY') {
+        slide(fwd, 0);
+      } else if (type === 'KE') {
+        add(r + fwd * 2, c - 1);
+        add(r + fwd * 2, c + 1);
+      } else if (type === 'GI') {
+        add(r + fwd, c - 1);
+        add(r + fwd, c);
+        add(r + fwd, c + 1);
+        add(r - fwd, c - 1);
+        add(r - fwd, c + 1);
+      } else if (type === 'KI' || type === 'TO' || type === 'NY' || type === 'NK' || type === 'NG') {
+        add(r + fwd, c - 1);
+        add(r + fwd, c);
+        add(r + fwd, c + 1);
+        add(r, c - 1);
+        add(r, c + 1);
+        add(r - fwd, c);
+      } else if (type === 'KA') {
+        slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1);
+      } else if (type === 'HI') {
+        slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1);
+      } else if (type === 'UM') {
+        slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1);
+        add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1);
+      } else if (type === 'RY') {
+        slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1);
+        add(r - 1, c - 1); add(r - 1, c + 1); add(r + 1, c - 1); add(r + 1, c + 1);
+      } else if (type === 'OU') {
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr !== 0 || dc !== 0) add(r + dr, c + dc);
           }
         }
       }
-      return all;
+      return moves;
     }
 
-    draw();
+    // 持ち駒を打てるマス
+    function getDropMoves(color, type) {
+      const moves = [];
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          if (!board[r][c]) {
+            // 二歩禁止
+            if (type === 'FU') {
+              let hasFu = false;
+              for (let tr = 0; tr < 9; tr++) {
+                const p = board[tr][c];
+                if (p && p.color === color && p.type === 'FU') {
+                  hasFu = true;
+                  break;
+                }
+              }
+              if (hasFu) continue;
+            }
+            // 行き所のない駒禁止
+            if (type === 'FU' || type === 'KY') {
+              if (color === 0 && r === 0) continue;
+              if (color === 1 && r === 8) continue;
+            }
+            if (type === 'KE') {
+              if (color === 0 && r <= 1) continue;
+              if (color === 1 && r >= 7) continue;
+            }
+            moves.push({ r, c });
+          }
+        }
+      }
+      return moves;
+    }
+
+    function getAllMoves(b, color) {
+      const moves = [];
+      // 盤上の手
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const piece = b[r][c];
+          if (piece && piece.color === color) {
+            const targets = getPieceMoves(b, r, c);
+            targets.forEach(t => moves.push({ from: { r, c }, toR: t.r, toC: t.c, drop: null }));
+          }
+        }
+      }
+      // 持ち駒を打つ手
+      for (const type in hands[color]) {
+        if (hands[color][type] > 0) {
+          const drops = getDropMoves(color, type);
+          drops.forEach(d => moves.push({ from: null, toR: d.r, toC: d.c, drop: type }));
+        }
+      }
+      return moves;
+    }
+
+    // 起動
+    initGame();
   </script>
 </body>
 </html>
