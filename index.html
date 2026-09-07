@@ -12,6 +12,8 @@
       --movable: #69db7c;
       --danger-target: #ff6b6b;
       --danger-attacker: #fa5252;
+      --last-from: #ffd43b;
+      --last-to: #ffa94d;
       --text-color: #212529;
     }
     body {
@@ -94,13 +96,22 @@
       cursor: pointer;
       position: relative;
       box-sizing: border-box;
-      transition: background-color 0.2s ease;
+      transition: background-color 0.15s ease;
     }
     .cell.selected {
       background-color: var(--selected);
     }
     .cell.movable {
       background-color: var(--movable);
+    }
+    /* 直前の指し手ハイライト */
+    .cell.last-move-from {
+      background-color: var(--last-from) !important;
+      opacity: 0.85;
+    }
+    .cell.last-move-to {
+      background-color: var(--last-to) !important;
+      box-shadow: inset 0 0 0 2px #e8590c;
     }
     /* 反撃アニメーション用のマス強調 */
     .cell.punish-attacker {
@@ -131,7 +142,6 @@
       font-size: 0.85rem;
       min-height: 20px;
     }
-    /* 悪手ブレーキ用ポップアップ */
     #brake-modal {
       display: none;
       position: absolute;
@@ -236,12 +246,16 @@
     let legalMoves = [];
     let isCpuBusy = false;
     let backupState = null;
-    let pendingPunish = null; // 相手の反撃手データ
+    let pendingPunish = null;
+
+    // 直前の指し手を記録する変数
+    let lastMove = null; // { fromR, fromC, toR, toC }
 
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
       hands = { 0: {}, 1: {} };
       turn = 0;
+      lastMove = null;
 
       // 後手 (1)
       const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
@@ -275,16 +289,28 @@
             cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
           }
 
+          // 1. 直前の指し手（移動元・移動先）のハイライト
+          if (lastMove) {
+            if (lastMove.fromR === r && lastMove.fromC === c) {
+              cell.classList.add('last-move-from');
+            }
+            if (lastMove.toR === r && lastMove.toC === c) {
+              cell.classList.add('last-move-to');
+            }
+          }
+
+          // 2. 選択中のマス
           if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) {
             cell.classList.add('selected');
           }
 
+          // 3. 移動可能マス
           const isTarget = legalMoves.some(m => m.r === r && m.c === c);
           if (isTarget) {
             cell.classList.add('movable');
           }
 
-          // 反撃デモ用のマス強調
+          // 4. 反撃デモ用のマス強調
           if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) {
             cell.classList.add('punish-attacker');
           }
@@ -348,7 +374,6 @@
         legalMoves = [];
         render();
 
-        // 悪手判定（反撃手の取得）
         const blunder = checkBlunder(r, c);
         if (blunder) {
           pendingPunish = blunder.punishMove;
@@ -376,6 +401,14 @@
     }
 
     function executeMove(color, from, dropType, toR, toC) {
+      // 直前の指し手を記録
+      lastMove = {
+        fromR: from ? from.r : null,
+        fromC: from ? from.c : null,
+        toR: toR,
+        toC: toC
+      };
+
       if (dropType) {
         board[toR][toC] = { type: dropType, color: color };
         hands[color][dropType]--;
@@ -399,7 +432,6 @@
       }
     }
 
-    // 悪手検出（咎める手を返す）
     function checkBlunder(toR, toC) {
       const piece = board[toR][toC];
       if (!piece || VALUES[piece.type] < 5) return null;
@@ -423,7 +455,6 @@
       document.getElementById('brake-modal').style.display = 'block';
     }
 
-    // 【目玉機能】相手の反撃アニメーション再生
     function showWhyBlunder() {
       document.getElementById('brake-modal').style.display = 'none';
       if (!pendingPunish) return;
@@ -431,19 +462,16 @@
       const p = pendingPunish;
       isCpuBusy = true;
 
-      // 1. 狙っている駒と取られる駒を色で強調
       const attackerPos = p.from ? { r: p.from.r, c: p.from.c } : null;
       const targetPos = { r: p.toR, c: p.toC };
       render(attackerPos, targetPos);
       document.getElementById('status-box').textContent = '⚠️ 相手の狙い筋を再生します...';
 
-      // 2. 1秒後に相手が駒を取る手を実行
       setTimeout(() => {
         executeMove(1, p.from, p.drop, p.toR, p.toC);
         render();
         document.getElementById('status-box').textContent = `💥 相手に ${KANJI[p.targetType]} を取られてしまいました！`;
 
-        // 3. 取られた事実をしっかり見せた後（1.8秒後）、直前へ自動巻き戻し
         setTimeout(() => {
           undoMove();
           document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
@@ -455,6 +483,7 @@
       if (backupState) {
         board = JSON.parse(backupState.board);
         hands = JSON.parse(backupState.hands);
+        lastMove = backupState.lastMove ? JSON.parse(backupState.lastMove) : null;
         turn = 0;
       }
       isCpuBusy = false;
@@ -473,7 +502,8 @@
     function saveState() {
       backupState = {
         board: JSON.stringify(board),
-        hands: JSON.stringify(hands)
+        hands: JSON.stringify(hands),
+        lastMove: lastMove ? JSON.stringify(lastMove) : null
       };
     }
 
