@@ -44,13 +44,13 @@
       width: 100%;
       background: #2b2d42;
       border-radius: 6px;
-      padding: 4px 8px;
+      padding: 4px 6px;
       margin-bottom: 4px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       box-sizing: border-box;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
     }
     .setting-group {
       display: flex;
@@ -59,7 +59,7 @@
     }
     .setting-label {
       color: #adb5bd;
-      font-size: 0.68rem;
+      font-size: 0.65rem;
     }
     select {
       background: #3d405b;
@@ -74,7 +74,7 @@
       background: #495057;
       color: #fff;
       border: none;
-      padding: 5px 8px;
+      padding: 5px 7px;
       border-radius: 4px;
       font-size: 0.72rem;
       cursor: pointer;
@@ -120,7 +120,7 @@
       background: var(--selected);
       outline: 2px solid #f59f00;
     }
-    /* 盤面エリア（筋・段の数字付き） */
+    /* 盤面エリア */
     .board-wrapper {
       display: flex;
       flex-direction: column;
@@ -135,7 +135,7 @@
       color: #adb5bd;
       text-align: center;
       margin-bottom: 2px;
-      padding-right: 18px; /* 段ラベル分のオフセット */
+      padding-right: 18px;
       box-sizing: border-box;
     }
     .board-middle {
@@ -196,15 +196,15 @@
       min-height: 20px;
       box-sizing: border-box;
     }
-    /* モーダル共通 */
+    /* モーダル */
     .modal-overlay {
       display: none;
       position: absolute;
-      top: 40px;
-      width: 320px;
+      top: 35px;
+      width: 324px;
       background: #ffffff;
       color: #212529;
-      padding: 16px;
+      padding: 14px;
       border-radius: 10px;
       box-shadow: 0 8px 25px rgba(0,0,0,0.8);
       text-align: center;
@@ -213,8 +213,18 @@
     }
     #brake-modal { border: 3px solid #e03131; }
     #promote-modal { border: 3px solid #1971c2; }
-    .modal-title { margin: 0 0 6px 0; font-size: 1.05rem; }
-    .modal-desc { margin: 0 0 12px 0; font-size: 0.82rem; line-height: 1.4; }
+    .modal-title { margin: 0 0 4px 0; font-size: 1.05rem; }
+    .modal-score {
+      display: inline-block;
+      background: #ffe3e3;
+      color: #c92a2a;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: bold;
+      font-size: 0.8rem;
+      margin-bottom: 8px;
+    }
+    .modal-desc { margin: 0 0 10px 0; font-size: 0.82rem; line-height: 1.4; }
     .modal-btns { display: flex; flex-direction: column; gap: 6px; }
     .modal-btns-row { display: flex; gap: 8px; justify-content: center; }
     .btn {
@@ -237,7 +247,7 @@
   <div id="app-container">
     <h1>将棋ステップコーチ</h1>
 
-    <!-- コントロールパネル -->
+    <!-- 設定コントロール -->
     <div class="control-panel">
       <div class="setting-group">
         <span class="setting-label">相手レベル</span>
@@ -249,11 +259,13 @@
       </div>
 
       <div class="setting-group">
-        <span class="setting-label">アシスト</span>
+        <span class="setting-label">アシスト（目標棋力）</span>
         <select id="assist-level">
-          <option value="easy" selected>初級（手厚い）</option>
-          <option value="normal">中級（大駒のみ）</option>
-          <option value="off">上級（なし）</option>
+          <option value="10k">アマ10級（大悪手のみ）</option>
+          <option value="5k" selected>アマ5級（悪手を警告）</option>
+          <option value="1d">アマ初段（疑問手も警告）</option>
+          <option value="3d">アマ三段（厳格モード）</option>
+          <option value="off">実戦（アシストなし）</option>
         </select>
       </div>
 
@@ -291,7 +303,8 @@
     <!-- 悪手ブレーキモーダル -->
     <div id="brake-modal" class="modal-overlay">
       <h2 class="modal-title" style="color: #c92a2a;">⚠️ 悪手ブレーキ作動！</h2>
-      <p id="brake-msg" class="modal-desc">その手を指すと大きな駒損になります。</p>
+      <div id="brake-score-badge" class="modal-score">評価値 −420点</div>
+      <p id="brake-msg" class="modal-desc">その手は目標棋力基準では大きな悪手です。</p>
       <div class="modal-btns">
         <button class="btn btn-why" onclick="showWhyBlunder()">なぜ？（相手の反撃を見る）</button>
         <button class="btn btn-undo" onclick="undoMove()">待った（直前に巻き戻す）</button>
@@ -311,18 +324,28 @@
   </div>
 
   <script>
-    // 駒の1文字統一表記
     const KANJI = {
       FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
       TO: 'と', NY: '杏', NK: '圭', NG: '全', UM: '馬', RY: '竜'
     };
     const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
     const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
-    const VALUES = {
-      FU: 1, KY: 3, KE: 4, GI: 5, KI: 6, KA: 8, HI: 10, OU: 1000,
-      TO: 6, NY: 6, NK: 6, NG: 6, UM: 10, RY: 12
+
+    // 評価値算出用の重み（歩=100点基準）
+    const PIECE_VALS = {
+      FU: 100, KY: 300, KE: 400, GI: 500, KI: 600, KA: 850, HI: 1000, OU: 15000,
+      TO: 600, NY: 600, NK: 600, NG: 600, UM: 1050, RY: 1200
     };
     const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
+
+    // 棋力別のアシスト閾値（評価値の下落幅 Loss がこれ以上ならブレーキ）
+    const ASSIST_THRESHOLDS = {
+      '10k': 700, // アマ10級：大悪手（飛車角タダ取り等）のみ
+      '5k': 450,  // アマ5級：金銀タダ取りなど明白な悪手
+      '1d': 250,  // アマ初段：桂・香・歩損や反撃の隙などの疑問手
+      '3d': 150,  // アマ三段：わずかな損でも厳格に指摘
+      'off': 999999
+    };
 
     let board = [];
     let hands = { 0: {}, 1: {} };
@@ -334,7 +357,7 @@
     let pendingPunish = null;
     let pendingPromotion = null;
     let lastMove = null;
-    let moveHistory = []; // 待った用スタック
+    let moveHistory = [];
 
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
@@ -376,7 +399,6 @@
       }
     }
 
-    // 盤面DOMの初回構築（イベント委譲で軽量化）
     function buildBoardDOM() {
       const boardEl = document.getElementById('board');
       boardEl.innerHTML = '';
@@ -479,7 +501,6 @@
     function onSelectDrop(type) {
       selectedSquare = null;
       selectedDrop = type;
-      // 自殺手を弾いた厳密な合法手を抽出
       legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.drop === type);
       document.getElementById('status-box').textContent = `${KANJI[type]} を打つマスを選んでください`;
       updateDisplay();
@@ -489,11 +510,9 @@
       const targetMove = legalMoves.find(m => m.toR === r && m.toC === c);
 
       if (targetMove) {
-        // 成り選択が必要かチェック
         const piece = targetMove.drop ? null : board[targetMove.from.r][targetMove.from.c];
         const canPromote = piece && PROMOTE_MAP[piece.type] && (targetMove.toR <= 2 || targetMove.from.r <= 2);
 
-        // 強制成り判定（行き所のない駒）
         const mustPromote = piece && (
           (piece.type === 'FU' || piece.type === 'KY') && targetMove.toR === 0
         ) || (piece.type === 'KE' && targetMove.toR <= 1);
@@ -501,7 +520,6 @@
         if (mustPromote) {
           processPlayerMove(targetMove, true);
         } else if (canPromote) {
-          // 成り選択モーダルを表示（この間も操作ロック）
           isCpuBusy = true;
           pendingPromotion = targetMove;
           document.getElementById('promote-modal').style.display = 'block';
@@ -511,7 +529,6 @@
         return;
       }
 
-      // 駒選択
       const piece = board[r][c];
       if (piece && piece.color === 0) {
         selectedDrop = null;
@@ -536,9 +553,58 @@
       }
     }
 
+    // 評価値計算（先手視点での総合スコア）
+    function evaluatePosition(b, h) {
+      let score = 0;
+      // 盤上の駒
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const p = b[r][c];
+          if (p) {
+            const val = PIECE_VALS[p.type] || 0;
+            // 先手ならプラス、後手ならマイナス
+            if (p.color === 0) {
+              score += val;
+              // 前進ボーナス
+              score += (8 - r) * 5;
+            } else {
+              score -= val;
+              score -= r * 5;
+            }
+          }
+        }
+      }
+      // 持ち駒
+      HAND_ORDER.forEach(t => {
+        score += (h[0][t] || 0) * PIECE_VALS[t];
+        score -= (h[1][t] || 0) * PIECE_VALS[t];
+      });
+      return score;
+    }
+
     function processPlayerMove(move, promote) {
+      // 1. 直前局面における先手の最善スコア（期待値）を計算
+      const prePlayerMoves = getStrictLegalMoves(board, hands, 0);
+      let bestExpectedScore = -999999;
+
+      // 軽量評価：先手の全合法手のうち最も高いものを探す
+      for (const m of prePlayerMoves) {
+        const simB = JSON.parse(JSON.stringify(board));
+        const simH = JSON.parse(JSON.stringify(hands));
+        executeMoveOnBoard(simB, simH, 0, m.from, m.drop, m.toR, m.toC, true);
+
+        // 相手のSEE損得を織り込む
+        const oppGain = see(simB, simH, m.toR, m.toC, 1);
+        const evalVal = evaluatePosition(simB, simH) - (oppGain * 50);
+
+        if (evalVal > bestExpectedScore) {
+          bestExpectedScore = evalVal;
+        }
+      }
+
       saveHistory();
 
+      // 手を実際に適用
       executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
       lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
 
@@ -547,43 +613,82 @@
       legalMoves = [];
       updateDisplay();
 
-      // 静的交換（SEE）による高度な悪手判定
-      const blunder = evaluatePlayerMoveBlunder(move, promote);
-      if (blunder) {
-        isCpuBusy = true; // 操作を完全にロック
-        pendingPunish = blunder.punishMove;
-        document.getElementById('brake-msg').textContent = blunder.message;
-        document.getElementById('brake-modal').style.display = 'block';
-        return;
+      // 2. 指した後の局面における評価値の落差（Loss）を算出
+      const assistLevel = document.getElementById('assist-level').value;
+      const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
+
+      if (assistLevel !== 'off') {
+        // 相手の最も厳しい反撃手（最小スコアになる手）をシミュレート
+        const oppMoves = getStrictLegalMoves(board, hands, 1);
+        let worstScoreForPlayer = 999999;
+        let killerMove = null;
+
+        for (const om of oppMoves) {
+          const simB = JSON.parse(JSON.stringify(board));
+          const simH = JSON.parse(JSON.stringify(hands));
+          executeMoveOnBoard(simB, simH, 1, om.from, om.drop, om.toR, om.toC, true);
+
+          const myGain = see(simB, simH, om.toR, om.toC, 0);
+          const evalAfterOpp = evaluatePosition(simB, simH) + (myGain * 50);
+
+          if (evalAfterOpp < worstScoreForPlayer) {
+            worstScoreForPlayer = evalAfterOpp;
+            killerMove = om;
+          }
+        }
+
+        const loss = bestExpectedScore - worstScoreForPlayer;
+
+        // 評価値の落差が目標棋力の許容範囲を超えている場合
+        if (loss >= threshold) {
+          isCpuBusy = true; // 操作を完全にロック
+
+          const movedPiece = board[move.toR][move.toC];
+          const killerFromPiece = killerMove && killerMove.from ? board[killerMove.from.r][killerMove.from.c] : null;
+          const killerName = killerFromPiece ? KANJI[killerFromPiece.type] : (killerMove && killerMove.drop ? KANJI[killerMove.drop] : '相手の攻め');
+
+          pendingPunish = killerMove ? {
+            from: killerMove.from,
+            toR: killerMove.toR,
+            toC: killerMove.toC,
+            drop: killerMove.drop,
+            targetType: board[killerMove.toR][killerMove.toC] ? board[killerMove.toR][killerMove.toC].type : movedPiece.type
+          } : null;
+
+          // 棋力名マッピング
+          const levelNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
+          const levelName = levelNames[assistLevel];
+
+          document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
+          document.getElementById('brake-msg').textContent = `【${levelName}基準で警告】その手を指すと、相手の ${killerName} からの厳しい反撃を受け、形勢を損ねてしまいます。`;
+          document.getElementById('brake-modal').style.display = 'block';
+          return;
+        }
       }
 
       passTurnToCpu();
     }
 
     // 静的交換探索（SEE: Static Exchange Evaluation）
-    // そのマスでの取り合いを価値の低い順にシミュレートし、最終損得を計算
     function see(b, h, toR, toC, attackerColor) {
       const pieceOnSquare = b[toR][toC];
       if (!pieceOnSquare) return 0;
 
       let dList = [];
-      let currentVal = VALUES[pieceOnSquare.type];
+      let currentVal = PIECE_VALS[pieceOnSquare.type] || 0;
       dList.push(currentVal);
 
       let simB = JSON.parse(JSON.stringify(b));
       let side = attackerColor;
 
       while (true) {
-        // side側から(toR, toC)に利いている駒の中で最も価値の低い駒を探す
         const attackers = getAttackersTo(simB, toR, toC, side);
         if (attackers.length === 0) break;
 
-        // 最小価値の駒を選択
-        attackers.sort((a, b) => VALUES[a.piece.type] - VALUES[b.piece.type]);
+        attackers.sort((a, b) => (PIECE_VALS[a.piece.type] || 0) - (PIECE_VALS[b.piece.type] || 0));
         const bestAttacker = attackers[0];
 
-        // 仮想移動
-        const capturedVal = VALUES[simB[toR][toC].type];
+        const capturedVal = PIECE_VALS[simB[toR][toC].type] || 0;
         simB[toR][toC] = { type: bestAttacker.piece.type, color: side };
         simB[bestAttacker.r][bestAttacker.c] = null;
 
@@ -591,14 +696,11 @@
         side = 1 - side;
       }
 
-      // ミニマックスで巻き戻し計算
       while (dList.length > 1) {
         const last = dList.pop();
-        if (last > 0) {
-          dList[dList.length - 1] -= last;
-        }
+        if (last > 0) dList[dList.length - 1] -= last;
       }
-      return dList[0];
+      return Math.max(0, dList[0]);
     }
 
     function getAttackersTo(b, toR, toC, color) {
@@ -617,38 +719,12 @@
       return attackers;
     }
 
-    // プレイヤーの手に対する高精度悪手判定
-    function evaluatePlayerMoveBlunder(move, promote) {
-      const assistLevel = document.getElementById('assist-level').value;
-      if (assistLevel === 'off') return null;
-
-      // 相手の後続SEEを計算（相手視点でプラス＝プレイヤーの大損）
-      const gainForOpponent = see(board, hands, move.toR, move.toC, 1);
-
-      // 移動した駒の価値
-      const movedPiece = board[move.toR][move.toC];
-      const val = VALUES[movedPiece.type];
-
-      // 閾値：初級なら銀・金以上(5点以上)の損、中級なら大駒(8点以上)の損
-      const threshold = assistLevel === 'easy' ? 4 : 7;
-
-      if (gainForOpponent >= threshold) {
-        // 咎める最善手を1つ特定
-        const oppAttackers = getAttackersTo(board, move.toR, move.toC, 1);
-        oppAttackers.sort((a, b) => VALUES[a.piece.type] - VALUES[b.piece.type]);
-        const killer = oppAttackers[0];
-
-        return {
-          message: `【悪手警告】指したばかりの ${KANJI[movedPiece.type]} が ${KANJI[killer.piece.type]} で取られ、駒交換で大損してしまいます。`,
-          punishMove: { from: { r: killer.r, c: killer.c }, toR: move.toR, toC: move.toC, drop: null, targetType: movedPiece.type }
-        };
-      }
-      return null;
-    }
-
     function showWhyBlunder() {
       document.getElementById('brake-modal').style.display = 'none';
-      if (!pendingPunish) return;
+      if (!pendingPunish) {
+        undoMove();
+        return;
+      }
 
       const p = pendingPunish;
       isCpuBusy = true;
@@ -661,7 +737,7 @@
       setTimeout(() => {
         executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, true);
         updateDisplay();
-        document.getElementById('status-box').textContent = `💥 相手に ${KANJI[p.targetType]} を取られてしまいました！`;
+        document.getElementById('status-box').textContent = `💥 相手に厳しい手を突かれました！`;
 
         setTimeout(() => {
           undoMove();
@@ -692,7 +768,6 @@
       passTurnToCpu();
     }
 
-    // 通常の待った（プレイヤー手＋CPU手の一往復巻き戻し）
     function undoSingleMove() {
       if (isCpuBusy || moveHistory.length === 0) return;
       undoMove();
@@ -712,7 +787,6 @@
       isCpuBusy = true;
       document.getElementById('status-box').textContent = '相手（CPU）が思考中...';
 
-      // 詰みチェック
       const cpuLegal = getStrictLegalMoves(board, hands, 1);
       if (cpuLegal.length === 0) {
         if (isKingInCheck(board, 1)) {
@@ -729,7 +803,6 @@
         turn = 0;
         isCpuBusy = false;
 
-        // プレイヤーの詰みチェック
         const playerLegal = getStrictLegalMoves(board, hands, 0);
         if (playerLegal.length === 0) {
           if (isKingInCheck(board, 0)) {
@@ -745,7 +818,6 @@
       }, 600);
     }
 
-    // CPU思考ロジック
     function playCpuTurn() {
       const moves = getStrictLegalMoves(board, hands, 1);
       if (moves.length === 0) return;
@@ -754,7 +826,6 @@
       let selected = null;
 
       if (cpuLevel === 1) {
-        // 初級：70%ランダム、30%だけ簡単な駒取り
         const captures = moves.filter(m => board[m.toR][m.toC] && board[m.toR][m.toC].color === 0);
         if (captures.length > 0 && Math.random() < 0.3) {
           selected = captures[Math.floor(Math.random() * captures.length)];
@@ -762,45 +833,37 @@
           selected = moves[Math.floor(Math.random() * moves.length)];
         }
       } else if (cpuLevel === 2) {
-        // 中級：SEE（損得計算）を取り入れ、大損する手は避けて最大の駒得を狙う
-        let bestVal = -9999;
+        let bestVal = 999999;
         for (const m of moves) {
-          let score = 0;
-          const target = board[m.toR][m.toC];
-          if (target && target.color === 0) score += VALUES[target.type] * 5;
-          // タダ取りされないかチェック
-          const loss = see(board, hands, m.toR, m.toC, 0);
-          score -= loss * 5;
-          score += Math.random() * 2;
-          if (score > bestVal) {
+          const simB = JSON.parse(JSON.stringify(board));
+          const simH = JSON.parse(JSON.stringify(hands));
+          executeMoveOnBoard(simB, simH, 1, m.from, m.drop, m.toR, m.toC, true);
+
+          const myLoss = see(simB, simH, m.toR, m.toC, 0);
+          const score = evaluatePosition(simB, simH) + (myLoss * 50) + (Math.random() * 20);
+
+          if (score < bestVal) {
             bestVal = score;
             selected = m;
           }
         }
       } else {
-        // 上級：敵陣脱出時の成りチェック、王手ボーナス、損得先読み
-        let bestScore = -99999;
+        let bestVal = 999999;
         for (const m of moves) {
-          let score = 0;
-          const target = board[m.toR][m.toC];
-          if (target && target.color === 0) score += VALUES[target.type] * 10;
+          const simB = JSON.parse(JSON.stringify(board));
+          const simH = JSON.parse(JSON.stringify(hands));
+          executeMoveOnBoard(simB, simH, 1, m.from, m.drop, m.toR, m.toC, true);
 
-          // 成りボーナス（移動先または移動元が敵陣6段目以上）
+          const myLoss = see(simB, simH, m.toR, m.toC, 0);
+          let score = evaluatePosition(simB, simH) + (myLoss * 80);
+
           const canPromote = !m.drop && (m.toR >= 6 || m.from.r >= 6);
-          if (canPromote) {
-            const p = board[m.from.r][m.from.c];
-            if (PROMOTE_MAP[p.type]) score += 15;
-          }
+          if (canPromote) score -= 150; // 成りボーナス
 
-          // 取り合い損得
-          const loss = see(board, hands, m.toR, m.toC, 0);
-          score -= loss * 8;
+          score += Math.random() * 10;
 
-          score += m.toR; // 前進加点
-          score += Math.random() * 3;
-
-          if (score > bestScore) {
-            bestScore = score;
+          if (score < bestVal) {
+            bestVal = score;
             selected = m;
           }
         }
@@ -808,7 +871,6 @@
 
       if (!selected) selected = moves[0];
 
-      // 成り判定
       const shouldPromote = !selected.drop && (selected.toR >= 6 || selected.from.r >= 6);
       executeMoveOnBoard(board, hands, 1, selected.from, selected.drop, selected.toR, selected.toC, shouldPromote);
       lastMove = { fromR: selected.from ? selected.from.r : null, fromC: selected.from ? selected.from.c : null, toR: selected.toR, toC: selected.toC };
@@ -837,18 +899,15 @@
       }
     }
 
-    // 自殺手・王手放置を厳密に排除した完全合法手を生成
     function getStrictLegalMoves(b, h, color) {
       const candidates = getCandidateMoves(b, h, color);
       const legal = [];
 
       for (const m of candidates) {
-        // 仮想ボードで試行
         const simB = JSON.parse(JSON.stringify(b));
         const simH = JSON.parse(JSON.stringify(h));
         executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, false);
 
-        // 指した後に自玉が王手されていなければ合法
         if (!isKingInCheck(simB, color)) {
           legal.push(m);
         }
@@ -857,7 +916,6 @@
     }
 
     function isKingInCheck(b, color) {
-      // 玉を探す
       let kr = -1, kc = -1;
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
@@ -868,9 +926,7 @@
         }
         if (kr !== -1) break;
       }
-      if (kr === -1) return true; // 玉なし
-
-      // 相手の駒の利きに玉が入っているか
+      if (kr === -1) return true;
       return isSquareAttacked(b, kr, kc, 1 - color);
     }
 
@@ -889,7 +945,6 @@
 
     function getCandidateMoves(b, h, color) {
       const list = [];
-      // 盤上の手
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
           const p = b[r][c];
@@ -899,13 +954,11 @@
           }
         }
       }
-      // 持ち駒の手
       HAND_ORDER.forEach(type => {
         if (h[color][type] > 0) {
           for (let r = 0; r < 9; r++) {
             for (let c = 0; c < 9; c++) {
               if (!b[r][c]) {
-                // 二歩禁止
                 if (type === 'FU') {
                   let hasFu = false;
                   for (let tr = 0; tr < 9; tr++) {
@@ -914,7 +967,6 @@
                   }
                   if (hasFu) continue;
                 }
-                // 行き所のない駒禁止
                 if ((type === 'FU' || type === 'KY') && ((color === 0 && r === 0) || (color === 1 && r === 8))) continue;
                 if (type === 'KE' && ((color === 0 && r <= 1) || (color === 1 && r >= 7))) continue;
 
