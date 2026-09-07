@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>将棋ステップコーチ</title>
-  <!-- フォールバック用スクリプト読み込み -->
   <script src="./stockfish.js" onerror="console.warn('Direct script load skipped')"></script>
   <style>
     :root {
@@ -355,7 +354,6 @@
   </div>
 
   <script>
-    // 駒表記
     const KANJI = {
       FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
       TO: 'と', NY: '杏', NK: '圭', NG: '全', UM: '馬', RY: '竜'
@@ -363,17 +361,15 @@
     const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
     const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
 
-    // USI表記文字対応
     const USI_PIECE_TO_TYPE = { 'P': 'FU', 'L': 'KY', 'N': 'KE', 'S': 'GI', 'G': 'KI', 'B': 'KA', 'R': 'HI', 'K': 'OU' };
     const TYPE_TO_USI_PIECE = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' };
     const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
 
-    // 棋力別アシスト閾値（評価値落差 Loss）
     const ASSIST_THRESHOLDS = {
-      '10k': 650, // 10級：大駒タダ取り等の大悪手のみ
-      '5k': 400,  // 5級：ハッキリした悪手を警告
-      '1d': 220,  // 初段：緩手・疑問手も指摘
-      '3d': 120,  // 三段：微小な形勢差も厳格判定
+      '10k': 650,
+      '5k': 400,
+      '1d': 220,
+      '3d': 120,
       'off': 999999
     };
 
@@ -388,11 +384,8 @@
     let pendingPromotion = null;
     let lastMove = null;
     let moveHistory = [];
-    let usiHistory = []; // USI指し手系列 (例: ["7g7f", "3c3d"])
+    let usiHistory = [];
 
-    // ==========================================
-    // Fairy-Stockfish WASM エンジン通信管理
-    // ==========================================
     let engineWorker = null;
     let isEngineReady = false;
     let currentEngineResolve = null;
@@ -444,19 +437,16 @@
         document.getElementById('engine-label').textContent = 'Fairy-Stockfish: 稼働中';
       }
 
-      // 評価値のパース
       if (line.startsWith('info') && line.includes('score cp')) {
         const parts = line.split(/\s+/);
         const cpIdx = parts.indexOf('cp');
         if (cpIdx !== -1 && parts[cpIdx + 1]) {
           const cpVal = parseInt(parts[cpIdx + 1], 10);
-          // 手番側の評価値を先手視点に変換
           currentEvalScore = (turn === 0) ? cpVal : -cpVal;
           document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
         }
       }
 
-      // 最善手の受信
       if (line.startsWith('bestmove')) {
         const parts = line.split(/\s+/);
         const bestMoveStr = parts[1];
@@ -467,11 +457,9 @@
       }
     }
 
-    // エンジンに局面を探索させる（ミリ秒指定）
     function evaluateWithEngine(moves, timeMs = 350) {
       return new Promise((resolve) => {
         if (!isEngineReady) {
-          // エンジン未起動時の簡易フォールバック
           resolve({ bestMove: null, score: 0 });
           return;
         }
@@ -480,7 +468,6 @@
         sendToEngine(`position startpos${movesCmd}`);
         sendToEngine(`go movetime ${timeMs}`);
 
-        // 念のためのタイムアウト保護
         setTimeout(() => {
           if (currentEngineResolve) {
             currentEngineResolve({ bestMove: null, score: currentEvalScore });
@@ -490,9 +477,6 @@
       });
     }
 
-    // ==========================================
-    // 局面・ルール管理
-    // ==========================================
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
       hands = { 0: {}, 1: {} };
@@ -508,14 +492,12 @@
       moveHistory = [];
       usiHistory = [];
 
-      // 後手 (1)
       const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
       for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
       board[1][1] = { type: 'HI', color: 1 };
       board[1][7] = { type: 'KA', color: 1 };
       for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
 
-      // 先手 (0)
       for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
       board[7][1] = { type: 'KA', color: 0 };
       board[7][7] = { type: 'HI', color: 0 };
@@ -685,7 +667,6 @@
       }
     }
 
-    // 内部指し手をUSI文字列に変換
     function moveToUsi(move, promote) {
       const files = ['9','8','7','6','5','4','3','2','1'];
       const ranks = ['a','b','c','d','e','f','g','h','i'];
@@ -702,7 +683,6 @@
       }
     }
 
-    // USI文字列を内部指し手に変換
     function usiToMove(usi) {
       if (!usi || usi === '(none)') return null;
       const files = ['9','8','7','6','5','4','3','2','1'];
@@ -724,9 +704,6 @@
       }
     }
 
-    // ==========================================
-    // プレイヤー着手処理 ＆ Fairy-Stockfish悪手判定
-    // ==========================================
     async function processPlayerMove(move, promote) {
       isCpuBusy = true;
       document.getElementById('status-box').textContent = 'Fairy-Stockfish が局面を解析中...';
@@ -734,27 +711,21 @@
       const assistLevel = document.getElementById('assist-level').value;
       const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
 
-      // 1. 直前局面でのエンジン評価値（期待値）
       const preAnalysis = await evaluateWithEngine(usiHistory, 300);
       const preScore = preAnalysis.score;
 
-      // プレイヤーの手をUSIに追加
       const playerUsi = moveToUsi(move, promote);
       const candidateUsiHistory = [...usiHistory, playerUsi];
 
-      // 2. 指した後の局面をエンジンで探索（相手の手番での最善反撃手と評価値）
       const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 350);
       const postScore = postAnalysis.score;
 
-      // 評価値の落差（先手視点での下落幅）
       const loss = preScore - postScore;
 
-      // アシスト判定：評価値が目標棋力の基準を超えて急落した場合にブレーキ発動
       if (assistLevel !== 'off' && isEngineReady && loss >= threshold) {
         const killerMove = usiToMove(postAnalysis.bestMove);
         pendingPunish = killerMove;
 
-        // 盤面にプレイヤーの手を一時反映
         saveHistory();
         executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
         lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
@@ -767,7 +738,6 @@
         return;
       }
 
-      // 問題なければ確定
       saveHistory();
       usiHistory.push(playerUsi);
       executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
@@ -845,9 +815,6 @@
       });
     }
 
-    // ==========================================
-    // CPU思考（Fairy-Stockfish 連携）
-    // ==========================================
     async function passTurnToCpu() {
       turn = 1;
       isCpuBusy = true;
@@ -865,20 +832,17 @@
       let selectedMove = null;
 
       if (isEngineReady && cpuLevel >= 2) {
-        // 中級・上級：Fairy-Stockfish の最善手を採用
         const timeMs = cpuLevel === 3 ? 600 : 250;
         const analysis = await evaluateWithEngine(usiHistory, timeMs);
         const parsed = usiToMove(analysis.bestMove);
         if (parsed) selectedMove = parsed;
       }
 
-      // 初級、またはエンジン解析待ち時のフォールバック
       if (!selectedMove) {
         selectedMove = cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
         selectedMove.promote = (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6));
       }
 
-      // 指し手適用
       usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
       executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
       lastMove = { fromR: selectedMove.from ? selectedMove.from.r : null, fromC: selectedMove.from ? selectedMove.from.c : null, toR: selectedMove.toR, toC: selectedMove.toC };
@@ -920,9 +884,6 @@
       }
     }
 
-    // ==========================================
-    // ルール・合法手判定
-    // ==========================================
     function getStrictLegalMoves(b, h, color) {
       const candidates = getCandidateMoves(b, h, color);
       const legal = [];
@@ -1053,7 +1014,6 @@
       return moves;
     }
 
-    // 起動
     initGame();
     initFairyStockfish();
   </script>
