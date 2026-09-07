@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>将棋ステップコーチ</title>
+  <!-- 将棋のルール判定ライブラリ -->
+  <script src="https://cdn.jsdelivr.net/npm/shogi.js@0.4.0/dist/shogi.min.js"></script>
+  <style>
+    :root {
+      --board-bg: #e6c594;
+      --cell-border: #7d5836;
+      --highlight-select: #ffe066;
+      --highlight-move: #a9e34b;
+      --highlight-danger: #ff8787;
+    }
+    body {
+      margin: 0;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #2b2d42;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #edf2f4;
+      user-select: none;
+    }
+    h1 {
+      font-size: 1.1rem;
+      margin: 5px 0 10px 0;
+    }
+    #app-container {
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+    }
+    .stand-area {
+      width: 340px;
+      min-height: 36px;
+      background: #3d405b;
+      border-radius: 6px;
+      margin: 4px 0;
+      display: flex;
+      align-items: center;
+      padding: 2px 8px;
+      box-sizing: border-box;
+      font-size: 0.85rem;
+    }
+    .stand-label {
+      color: #aaa;
+      margin-right: 8px;
+      font-size: 0.75rem;
+    }
+    .stand-pieces {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .stand-piece {
+      background: var(--board-bg);
+      color: #111;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+      border: 1px solid var(--cell-border);
+    }
+    .stand-piece.selected {
+      background-color: var(--highlight-select);
+      outline: 2px solid #f59f00;
+    }
+    #board {
+      display: grid;
+      grid-template-columns: repeat(9, 1fr);
+      grid-template-rows: repeat(9, 1fr);
+      width: 340px;
+      height: 340px;
+      border: 2px solid #4a2c11;
+      background-color: var(--board-bg);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+    }
+    .cell {
+      border: 0.5px solid var(--cell-border);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 1.1rem;
+      font-weight: bold;
+      cursor: pointer;
+      position: relative;
+    }
+    .cell.selected {
+      background-color: var(--highlight-select);
+    }
+    .cell.movable {
+      background-color: var(--highlight-move);
+    }
+    .gote {
+      transform: rotate(180deg);
+      color: #8b0000;
+    }
+    .sente {
+      color: #111111;
+    }
+    #status-box {
+      margin-top: 10px;
+      padding: 8px 12px;
+      width: 316px;
+      background-color: #3d405b;
+      border-radius: 6px;
+      text-align: center;
+      font-size: 0.85rem;
+      min-height: 20px;
+    }
+    /* 悪手ブレーキ用モーダル（警告画面） */
+    #brake-modal {
+      display: none;
+      position: absolute;
+      top: 60px;
+      width: 320px;
+      background: #fff;
+      color: #111;
+      padding: 16px;
+      border-radius: 10px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      border: 3px solid #e03131;
+      text-align: center;
+      z-index: 100;
+    }
+    #brake-modal h2 {
+      margin: 0 0 8px 0;
+      color: #c92a2a;
+      font-size: 1.1rem;
+    }
+    #brake-modal p {
+      margin: 0 0 14px 0;
+      font-size: 0.85rem;
+      line-height: 1.4;
+    }
+    .modal-buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    .btn {
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .btn-rollback {
+      background: #e03131;
+      color: #fff;
+    }
+    .btn-ignore {
+      background: #ced4da;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="app-container">
+    <h1>将棋ステップコーチ</h1>
+
+    <!-- 後手（CPU）持ち駒 -->
+    <div class="stand-area">
+      <span class="stand-label">CPU持ち駒</span>
+      <div id="gote-stand" class="stand-pieces">なし</div>
+    </div>
+
+    <!-- 盤面 -->
+    <div id="board"></div>
+
+    <!-- 先手（プレイヤー）持ち駒 -->
+    <div class="stand-area">
+      <span class="stand-label">自持ち駒</span>
+      <div id="sente-stand" class="stand-pieces">なし</div>
+    </div>
+
+    <!-- 状態表示 -->
+    <div id="status-box">あなたの番です。駒を動かしてください</div>
+
+    <!-- 悪手ブレーキ警告ポップアップ -->
+    <div id="brake-modal">
+      <h2>⚠️ 悪手ブレーキ作動！</h2>
+      <p id="brake-reason">その手を指すと駒をタダ取りされる危険があります。</p>
+      <div class="modal-buttons">
+        <button class="btn btn-rollback" onclick="rollbackMove()">待った（巻き戻す）</button>
+        <button class="btn btn-ignore" onclick="ignoreBrake()">このまま進める</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const pieceKanji = {
+      'FU': '歩', 'KY': '香', 'KE': '桂', 'GI': '銀', 'KI': '金', 'KA': '角', 'HI': '飛', 'OU': '玉',
+      'TO': 'と', 'NY': '成香', 'NK': '成桂', 'NG': '成銀', 'UM': '馬', 'RY': '竜'
+    };
+
+    const pieceValues = {
+      'FU': 1, 'KY': 3, 'KE': 4, 'GI': 5, 'KI': 6, 'KA': 8, 'HI': 10, 'OU': 100,
+      'TO': 6, 'NY': 6, 'NK': 6, 'NG': 6, 'UM': 10, 'RY': 12
+    };
+
+    let shogi = new Shogi();
+    shogi.initialize();
+
+    let historyState = null; // 巻き戻し用の1手前データ
+    let selectedSquare = null;
+    let selectedDropPiece = null;
+    let legalMovesForSelected = [];
+    let isCpuThinking = false;
+
+    const boardElement = document.getElementById('board');
+    const statusBox = document.getElementById('status-box');
+    const brakeModal = document.getElementById('brake-modal');
+    const brakeReason = document.getElementById('brake-reason');
+
+    function draw() {
+      drawBoard();
+      drawStands();
+    }
+
+    function drawBoard() {
+      boardElement.innerHTML = '';
+      for (let y = 1; y <= 9; y++) {
+        for (let x = 9; x >= 1; x--) {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+
+          const piece = shogi.get(x, y);
+          if (piece) {
+            cell.textContent = pieceKanji[piece.kind] || piece.kind;
+            cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
+          }
+
+          if (selectedSquare && selectedSquare.x === x && selectedSquare.y === y) {
+            cell.classList.add('selected');
+          }
+
+          const canMove = legalMovesForSelected.some(m => m.to.x === x && m.to.y === y);
+          if (canMove) {
+            cell.classList.add('movable');
+          }
+
+          cell.addEventListener('click', () => onCellClick(x, y));
+          boardElement.appendChild(cell);
+        }
+      }
+    }
+
+    function drawStands() {
+      const goteStand = document.getElementById('gote-stand');
+      const senteStand = document.getElementById('sente-stand');
+
+      renderStand(goteStand, 1);
+      renderStand(senteStand, 0);
+    }
+
+    function renderStand(container, color) {
+      container.innerHTML = '';
+      const pieces = shogi.getHandsSummary(color);
+      let count = 0;
+
+      for (const kind in pieces) {
+        if (pieces[kind] > 0) {
+          count++;
+          const chip = document.createElement('div');
+          chip.className = 'stand-piece';
+          chip.textContent = `${pieceKanji[kind]}×${pieces[kind]}`;
+
+          if (color === 0 && selectedDropPiece === kind) {
+            chip.classList.add('selected');
+          }
+
+          if (color === 0 && !isCpuThinking) {
+            chip.addEventListener('click', () => selectDropPiece(kind));
+          }
+          container.appendChild(chip);
+        }
+      }
+      if (count === 0) container.textContent = 'なし';
+    }
+
+    function selectDropPiece(kind) {
+      selectedSquare = null;
+      selectedDropPiece = kind;
+      legalMovesForSelected = getLegalDrops(kind);
+      statusBox.textContent = `持ち駒の ${pieceKanji[kind]} を打つマスを選んでください`;
+      draw();
+    }
+
+    function onCellClick(x, y) {
+      if (isCpuThinking || shogi.turn !== 0) return;
+
+      const targetMove = legalMovesForSelected.find(m => m.to.x === x && m.to.y === y);
+
+      // 移動または持ち駒を打つ処理
+      if (targetMove) {
+        executePlayerMove(targetMove);
+        return;
+      }
+
+      // 盤上の駒を選択
+      const piece = shogi.get(x, y);
+      if (piece && piece.color === 0) {
+        selectedDropPiece = null;
+        selectedSquare = { x, y };
+        legalMovesForSelected = getLegalMovesFrom(x, y);
+        statusBox.textContent = `${pieceKanji[piece.kind]} を選択中`;
+        draw();
+      } else {
+        selectedSquare = null;
+        selectedDropPiece = null;
+        legalMovesForSelected = [];
+        draw();
+      }
+    }
+
+    function executePlayerMove(move) {
+      // 1手前をバックアップ
+      historyState = shogi.toSFEN();
+
+      try {
+        if (move.drop) {
+          shogi.drop(move.to.x, move.to.y, move.drop);
+        } else {
+          // 3段目以内に入ったら自動で成る（簡易仕様）
+          const canPromote = (move.to.y <= 3 || selectedSquare.y <= 3);
+          shogi.move(selectedSquare.x, selectedSquare.y, move.to.x, move.to.y, canPromote);
+        }
+      } catch (e) {
+        statusBox.textContent = 'エラーが発生しました';
+        return;
+      }
+
+      selectedSquare = null;
+      selectedDropPiece = null;
+      legalMovesForSelected = [];
+      draw();
+
+      // 悪手ブレーキ判定
+      const blunder = detectBlunder(move.to.x, move.to.y);
+      if (blunder) {
+        triggerBrake(blunder);
+        return;
+      }
+
+      // 問題なければCPUの手番へ
+      proceedCpuTurn();
+    }
+
+    // 悪手検出（初歩：動かした駒が次の相手の合法手で即座にタダ取りされるか）
+    function detectBlunder(toX, toY) {
+      const movedPiece = shogi.get(toX, toY);
+      if (!movedPiece) return null;
+
+      // 飛車、角、金、銀などの主要駒を突っ込ませた場合
+      const val = pieceValues[movedPiece.kind] || 0;
+      if (val < 5) return null; // 歩などは対象外
+
+      // 相手のすべての合法手の中に、このマスを取る手があるかチェック
+      const opponentMoves = getAllLegalMoves(1);
+      const isTargeted = opponentMoves.some(m => m.to.x === toX && m.to.y === toY);
+
+      if (isTargeted) {
+        return `【悪手警告】指したばかりの ${pieceKanji[movedPiece.kind]} が相手の利きに入っています！タダ取りされる可能性が高いです。`;
+      }
+      return null;
+    }
+
+    function triggerBrake(reason) {
+      brakeReason.textContent = reason;
+      brakeModal.style.display = 'block';
+    }
+
+    function rollbackMove() {
+      if (historyState) {
+        shogi.initializeFromSFEN(historyState);
+        historyState = null;
+      }
+      brakeModal.style.display = 'none';
+      statusBox.textContent = '手を巻き戻しました。安全な手を考えましょう！';
+      draw();
+    }
+
+    function ignoreBrake() {
+      brakeModal.style.display = 'none';
+      statusBox.textContent = 'そのまま続行します。';
+      proceedCpuTurn();
+    }
+
+    function proceedCpuTurn() {
+      isCpuThinking = true;
+      statusBox.textContent = '相手（CPU）が考えています...';
+
+      setTimeout(() => {
+        cpuPlay();
+        isCpuThinking = false;
+        statusBox.textContent = 'あなたの番です';
+        draw();
+      }, 700);
+    }
+
+    // 簡易CPU思考ロジック
+    function cpuPlay() {
+      const moves = getAllLegalMoves(1);
+      if (moves.length === 0) {
+        alert('詰みです！あなたの勝ちです！');
+        return;
+      }
+
+      // 1. 相手（プレイヤー）の駒を取れる手があれば最優先で指す
+      let bestMove = null;
+      let maxValue = 0;
+
+      for (const m of moves) {
+        const dest = shogi.get(m.to.x, m.to.y);
+        if (dest && dest.color === 0) {
+          const val = pieceValues[dest.kind] || 0;
+          if (val > maxValue) {
+            maxValue = val;
+            bestMove = m;
+          }
+        }
+      }
+
+      // 2. 取れる駒がなければランダムに前進
+      if (!bestMove) {
+        bestMove = moves[Math.floor(Math.random() * moves.length)];
+      }
+
+      if (bestMove.drop) {
+        shogi.drop(bestMove.to.x, bestMove.to.y, bestMove.drop);
+      } else {
+        const canPromote = (bestMove.to.y >= 7 || bestMove.from.y >= 7);
+        shogi.move(bestMove.from.x, bestMove.from.y, bestMove.to.x, bestMove.to.y, canPromote);
+      }
+    }
+
+    function getLegalMovesFrom(fromX, fromY) {
+      const validMoves = [];
+      for (let ty = 1; ty <= 9; ty++) {
+        for (let tx = 9; tx >= 1; tx--) {
+          try {
+            const clone = new Shogi();
+            clone.initializeFromSFEN(shogi.toSFEN());
+            clone.move(fromX, fromY, tx, ty, false);
+            validMoves.push({ from: { x: fromX, y: fromY }, to: { x: tx, y: ty } });
+          } catch (e) {}
+        }
+      }
+      return validMoves;
+    }
+
+    function getLegalDrops(kind) {
+      const validDrops = [];
+      for (let ty = 1; ty <= 9; ty++) {
+        for (let tx = 9; tx >= 1; tx--) {
+          try {
+            const clone = new Shogi();
+            clone.initializeFromSFEN(shogi.toSFEN());
+            clone.drop(tx, ty, kind);
+            validDrops.push({ to: { x: tx, y: ty }, drop: kind });
+          } catch (e) {}
+        }
+      }
+      return validDrops;
+    }
+
+    function getAllLegalMoves(color) {
+      const all = [];
+      for (let y = 1; y <= 9; y++) {
+        for (let x = 9; x >= 1; x--) {
+          const p = shogi.get(x, y);
+          if (p && p.color === color) {
+            all.push(...getLegalMovesFrom(x, y));
+          }
+        }
+      }
+      return all;
+    }
+
+    draw();
+  </script>
+</body>
+</html>
