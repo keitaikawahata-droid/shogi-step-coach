@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>将棋ステップコーチ</title>
+  <!-- Fairy-Stockfish WASM 公式ローダー -->
+  <script src="./stockfish.js"></script>
   <style>
     :root {
       --board-bg: #e5c088;
@@ -317,7 +319,7 @@
     <div class="engine-status-bar">
       <div>
         <span id="engine-indicator" class="status-badge"></span>
-        <span id="engine-label">思考エンジン: 初期化中...</span>
+        <span id="engine-label">Fairy-Stockfish: 起動中...</span>
       </div>
       <div id="eval-display">評価値: 0</div>
     </div>
@@ -327,9 +329,9 @@
       <div class="setting-group">
         <span class="setting-label">相手レベル</span>
         <select id="cpu-level">
-          <option value="1">初級（入門）</option>
+          <option value="1">初級（手加減）</option>
           <option value="2">中級（手堅い）</option>
-          <option value="3" selected>上級（手強い・初段級）</option>
+          <option value="3" selected>上級（本格探索・初段級）</option>
         </select>
       </div>
 
@@ -379,10 +381,10 @@
     <div id="coach-card">
       <div class="coach-header">
         <span>💡 AIコーチの解説</span>
-        <span id="coach-badge" class="coach-badge badge-ok">準備完了</span>
+        <span id="coach-badge" class="coach-badge badge-ok">対局開始</span>
       </div>
       <div id="coach-body" class="coach-body">
-        対局を始めると、指した手とAI最善手の解説がここに表示されます。
+        対局を始めると、あなたが指した手とAI最善手の解説がここに表示されます。
       </div>
       <div id="coach-pv" class="coach-pv" style="display: none;">
         読み筋: -
@@ -424,16 +426,11 @@
     const TYPE_TO_USI_PIECE = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' };
     const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
 
-    const BASE_VALS = {
-      FU: 100, KY: 350, KE: 450, GI: 600, KI: 700, KA: 950, HI: 1150, OU: 30000,
-      TO: 680, NY: 620, NK: 620, NG: 640, UM: 1250, RY: 1450
-    };
-
     const ASSIST_THRESHOLDS = {
       '10k': 650,
-      '5k': 400,
-      '1d': 220,
-      '3d': 120,
+      '5k': 380,
+      '1d': 200,
+      '3d': 110,
       'off': 999999
     };
 
@@ -451,55 +448,53 @@
     let usiHistory = [];
 
     // ==========================================
-    // エンジン通信管理（やねうら王WASM）
+    // Fairy-Stockfish WASM 公式ローダー連携
     // ==========================================
-    let engineWorker = null;
+    let sfInstance = null;
     let isEngineReady = false;
     let currentEngineResolve = null;
     let currentEvalScore = 0;
     let currentBestPv = [];
 
-    function initEngine() {
-      try {
-        engineWorker = new Worker('./worker.js');
-        engineWorker.onmessage = onEngineMessage;
-        engineWorker.onerror = (err) => {
-          console.error("Worker error:", err);
-          onEngineFallback();
-        };
-      } catch (err) {
-        console.error("Worker start failed:", err);
-        onEngineFallback();
+    function initFairyStockfish() {
+      if (typeof Stockfish !== 'function') {
+        console.error('Stockfish loader not found in window');
+        document.getElementById('engine-label').textContent = 'エラー: stockfish.js 未読込';
+        return;
       }
-    }
 
-    function onEngineFallback() {
-      isEngineReady = false;
-      const badge = document.getElementById('engine-indicator');
-      const label = document.getElementById('engine-label');
-      if (badge && label) {
-        badge.classList.add('ready');
-        label.textContent = '内蔵AI: 稼働中（エンジン失敗）';
-      }
+      Stockfish({
+        locateFile: (path) => `./${path}`
+      }).then((sf) => {
+        sfInstance = sf;
+        sf.addMessageListener((line) => onEngineMessage(line));
+        sendToEngine('uci');
+      }).catch((err) => {
+        console.error('Stockfish boot failed:', err);
+        document.getElementById('engine-label').textContent = '起動失敗: ' + (err && err.message ? err.message : String(err));
+      });
     }
 
     function sendToEngine(cmd) {
-      if (engineWorker && typeof engineWorker.postMessage === 'function') {
-        engineWorker.postMessage(cmd);
+      if (sfInstance && typeof sfInstance.postMessage === 'function') {
+        sfInstance.postMessage(cmd);
       }
     }
 
-    function onEngineMessage(e) {
-      const line = typeof e.data === 'string' ? e.data.trim() : '';
+    function onEngineMessage(line) {
+      if (typeof line !== 'string') return;
+      line = line.trim();
       if (!line) return;
 
-      if (line === 'usiok') {
-        // やねうら王WASMはUSIネイティブなので設定不要
+      if (line === 'uciok') {
+        sendToEngine('setoption name UCI_Variant value shogi');
+        sendToEngine('setoption name Threads value 1');
+        sendToEngine('setoption name Hash value 32');
         sendToEngine('isready');
       } else if (line === 'readyok') {
         isEngineReady = true;
         document.getElementById('engine-indicator').classList.add('ready');
-        document.getElementById('engine-label').textContent = 'やねうら王: 稼働中';
+        document.getElementById('engine-label').textContent = 'Fairy-Stockfish: 稼働中';
       }
 
       if (line.startsWith('info') && line.includes('score cp')) {
@@ -524,11 +519,10 @@
       }
     }
 
-    function evaluateWithEngine(moves, timeMs = 900) {
+    function evaluateWithEngine(moves, timeMs = 1000) {
       return new Promise((resolve) => {
         if (!isEngineReady) {
-          const fallback = runInternalEngineSearch(board, hands, turn);
-          resolve(fallback);
+          resolve({ bestMove: null, score: 0, pv: [] });
           return;
         }
         currentEngineResolve = resolve;
@@ -539,116 +533,15 @@
 
         setTimeout(() => {
           if (currentEngineResolve) {
-            const fallback = runInternalEngineSearch(board, hands, turn);
-            currentEngineResolve(fallback);
+            currentEngineResolve({ bestMove: null, score: currentEvalScore, pv: currentBestPv });
             currentEngineResolve = null;
           }
-        }, timeMs + 300);
+        }, timeMs + 4000);
       });
     }
 
     // ==========================================
-    // 内蔵本格思考ルーチン（万が一の備え）
-    // ==========================================
-    function evaluateBoardStatic(b, h) {
-      let score = 0;
-      for (let r = 0; r < 9; r++) {
-        for (let c = 0; c < 9; c++) {
-          const p = b[r][c];
-          if (p) {
-            let v = BASE_VALS[p.type] || 0;
-            if (p.color === 0) score += v + (8 - r) * 6;
-            else score -= v + r * 6;
-          }
-        }
-      }
-      HAND_ORDER.forEach(t => {
-        score += (h[0][t] || 0) * (BASE_VALS[t] * 1.15);
-        score -= (h[1][t] || 0) * (BASE_VALS[t] * 1.15);
-      });
-      return score;
-    }
-
-    function qSearch(b, h, color, alpha, beta, depth) {
-      const standPat = (color === 0) ? evaluateBoardStatic(b, h) : -evaluateBoardStatic(b, h);
-      if (depth <= 0) return standPat;
-      if (standPat >= beta) return beta;
-      if (standPat > alpha) alpha = standPat;
-
-      const moves = getStrictLegalMoves(b, h, color).filter(m => !m.drop && b[m.toR][m.toC]);
-      moves.sort((x, y) => (BASE_VALS[b[y.toR][y.toC].type] || 0) - (BASE_VALS[b[x.toR][x.toC].type] || 0));
-
-      for (const m of moves) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || m.from.r <= 2)) || (color === 1 && (m.toR >= 6 || m.from.r >= 6));
-        executeMoveOnBoard(simB, simH, color, m.from, null, m.toR, m.toC, canProm);
-
-        const score = -qSearch(simB, simH, 1 - color, -beta, -alpha, depth - 1);
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
-      }
-      return alpha;
-    }
-
-    function alphaBetaSearch(b, h, color, depth, alpha, beta) {
-      if (depth <= 0) return qSearch(b, h, color, alpha, beta, 4);
-
-      const legal = getStrictLegalMoves(b, h, color);
-      if (legal.length === 0) {
-        return isKingInCheck(b, color) ? -25000 : 0;
-      }
-
-      legal.sort((x, y) => {
-        const vx = (!x.drop && b[x.toR][x.toC]) ? BASE_VALS[b[x.toR][x.toC].type] : 0;
-        const vy = (!y.drop && b[y.toR][y.toC]) ? BASE_VALS[b[y.toR][y.toC].type] : 0;
-        return vy - vx;
-      });
-
-      for (const m of legal) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
-                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
-
-        const score = -alphaBetaSearch(simB, simH, 1 - color, depth - 1, -beta, -alpha);
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
-      }
-      return alpha;
-    }
-
-    function runInternalEngineSearch(b, h, color) {
-      const legal = getStrictLegalMoves(b, h, color);
-      if (legal.length === 0) return { bestMove: null, score: 0, pv: [] };
-
-      let bestVal = -999999;
-      let bestM = legal[0];
-
-      for (const m of legal) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
-                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
-
-        const val = -alphaBetaSearch(simB, simH, 1 - color, 2, -999999, 999999);
-        if (val > bestVal) {
-          bestVal = val;
-          bestM = m;
-        }
-      }
-
-      const canPromBest = (color === 0 && (bestM.toR <= 2 || (bestM.from && bestM.from.r <= 2))) ||
-                          (color === 1 && (bestM.toR >= 6 || (bestM.from && bestM.from.r >= 6)));
-      const bestUsi = moveToUsi(bestM, canPromBest);
-      const displayScore = (color === 0) ? bestVal : -bestVal;
-      return { bestMove: bestUsi, score: displayScore, pv: [bestUsi] };
-    }
-
-    // ==========================================
-    // 盤面管理
+    // 盤面管理・ゲームループ
     // ==========================================
     function initGame() {
       board = Array(9).fill(null).map(() => Array(9).fill(null));
@@ -967,16 +860,16 @@
     }
 
     // ==========================================
-    // 着手処理 ＆ AIコーチ深層解説
+    // 着手処理 ＆ AIコーチ解説
     // ==========================================
     async function processPlayerMove(move, promote) {
       isCpuBusy = true;
-      document.getElementById('status-box').textContent = 'やねうら王が局面を解析中...';
+      document.getElementById('status-box').textContent = 'Fairy-Stockfish が深層解析中...';
 
       const assistLevel = document.getElementById('assist-level').value;
       const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
 
-      const preAnalysis = await evaluateWithEngine(usiHistory, 800);
+      const preAnalysis = await evaluateWithEngine(usiHistory, 900);
       const preScore = preAnalysis.score;
       const recommendedUsi = preAnalysis.bestMove;
       const enginePv = preAnalysis.pv;
@@ -984,7 +877,7 @@
       const playerUsi = moveToUsi(move, promote);
       const candidateUsiHistory = [...usiHistory, playerUsi];
 
-      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 900);
+      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 1000);
       const postScore = postAnalysis.score;
 
       const loss = preScore - postScore;
@@ -1000,7 +893,7 @@
 
         const levelNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
         document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
-        document.getElementById('brake-msg').textContent = `【${levelNames[assistLevel]}基準】その手を指すと厳しい反撃を突かれ、形勢を損ねてしまいます。`;
+        document.getElementById('brake-msg').textContent = `【${levelNames[assistLevel]}基準】その手を指すとエンジンに厳しい反撃を突かれ、形勢を損ねてしまいます。`;
         document.getElementById('brake-modal').style.display = 'block';
 
         updateCoachCard('badge-bad', '⚠️ 悪手警告', `評価値が ${Math.round(loss)}点 急落しました。最善手は ${formatUsiToJapanese(recommendedUsi, board, true)} でした。`, enginePv);
@@ -1070,7 +963,7 @@
       const attackerPos = p.from ? { r: p.from.r, c: p.from.c } : null;
       const targetPos = { r: p.toR, c: p.toC };
       updateDisplay(attackerPos, targetPos);
-      document.getElementById('status-box').textContent = '⚠️ AIの推奨反撃手順を再生中...';
+      document.getElementById('status-box').textContent = '⚠️ Fairy-Stockfish の推奨反撃手順を再生中...';
 
       setTimeout(() => {
         executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, p.promote);
@@ -1122,12 +1015,12 @@
     }
 
     // ==========================================
-    // CPU思考（やねうら王）
+    // CPU思考（Fairy-Stockfish）
     // ==========================================
     async function passTurnToCpu() {
       turn = 1;
       isCpuBusy = true;
-      document.getElementById('status-box').textContent = '相手（CPU）が思考中...';
+      document.getElementById('status-box').textContent = '相手（CPU）が深層思考中...';
 
       const cpuLegal = getStrictLegalMoves(board, hands, 1);
       if (cpuLegal.length === 0) {
@@ -1140,14 +1033,7 @@
       const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
       let selectedMove = null;
 
-      if (cpuLevel === 1) {
-        const captures = cpuLegal.filter(m => board[m.toR][m.toC] && board[m.toR][m.toC].color === 0);
-        if (captures.length > 0 && Math.random() < 0.3) {
-          selectedMove = captures[Math.floor(Math.random() * captures.length)];
-        } else {
-          selectedMove = cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
-        }
-      } else {
+      if (isEngineReady && cpuLevel >= 2) {
         const timeMs = cpuLevel === 3 ? 1200 : 500;
         const analysis = await evaluateWithEngine(usiHistory, timeMs);
         const parsed = usiToMove(analysis.bestMove);
@@ -1161,19 +1047,9 @@
       }
 
       if (!selectedMove) {
-        const fallback = runInternalEngineSearch(board, hands, 1);
-        const parsedFallback = usiToMove(fallback.bestMove);
-        if (parsedFallback) {
-          selectedMove = cpuLegal.find(m => 
-            (m.drop ? (m.drop === parsedFallback.drop && m.toR === parsedFallback.toR && m.toC === parsedFallback.toC) :
-                      (m.from && m.from.r === parsedFallback.from.r && m.from.c === parsedFallback.from.c && m.toR === parsedFallback.toR && m.toC === parsedFallback.toC))
-          );
-        }
+        selectedMove = cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
+        selectedMove.promote = (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6));
       }
-
-      if (!selectedMove) selectedMove = cpuLegal[0];
-
-      selectedMove.promote = selectedMove.promote || (!selectedMove.drop && (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6)));
 
       usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
       executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
@@ -1214,9 +1090,6 @@
       }
     }
 
-    // ==========================================
-    // 合法手生成
-    // ==========================================
     function getStrictLegalMoves(b, h, color) {
       const candidates = getCandidateMoves(b, h, color);
       const legal = [];
@@ -1344,10 +1217,8 @@
       return moves;
     }
 
-    // 起動
     initGame();
-    sendToEngine('ucinewgame');
-    initEngine();
+    initFairyStockfish();
   </script>
 </body>
 </html>
