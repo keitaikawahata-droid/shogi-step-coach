@@ -58,11 +58,8 @@
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: #f59f00;
-      margin-right: 4px;
-    }
-    .status-badge.ready {
       background: #37b24d;
+      margin-right: 4px;
     }
     .control-panel {
       width: 100%;
@@ -306,41 +303,7 @@
     .btn-continue { background: #ced4da; color: #343a40; }
     .btn-promote { background: #2f9e44; color: #ffffff; flex: 1; padding: 10px; }
     .btn-unpromote { background: #868e96; color: #ffffff; flex: 1; padding: 10px; }
-
-    #debug-console {
-      width: 100%;
-      margin-top: 10px;
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 6px;
-      font-family: monospace;
-      font-size: 0.65rem;
-      color: #58a6ff;
-      max-height: 100px;
-      overflow-y: auto;
-      box-sizing: border-box;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .log-err { color: #f85149; }
-    .log-ok { color: #3fb950; }
   </style>
-  <script>
-    window.dbgLog = function(msg, isErr, isOk) {
-      console.log(msg);
-      const el = document.getElementById('debug-log-content');
-      if (el) {
-        const span = document.createElement('div');
-        if (isErr) span.className = 'log-err';
-        if (isOk) span.className = 'log-ok';
-        span.textContent = msg;
-        el.appendChild(span);
-        el.parentElement.scrollTop = el.parentElement.scrollHeight;
-      }
-    };
-  </script>
-  <script src="./stockfish.js" onerror="dbgLog('[Error] stockfish.js 読込失敗', true)"></script>
 </head>
 <body>
 
@@ -351,7 +314,7 @@
     <div class="engine-status-bar">
       <div>
         <span id="engine-indicator" class="status-badge"></span>
-        <span id="engine-label">Fairy-Stockfish: 起動中...</span>
+        <span id="engine-label">内蔵本格思考エンジン: 稼働中</span>
       </div>
       <div id="eval-display">評価値: 0</div>
     </div>
@@ -361,7 +324,7 @@
       <div class="setting-group">
         <span class="setting-label">相手レベル</span>
         <select id="cpu-level">
-          <option value="1">初級（手加減）</option>
+          <option value="1">初級（入門）</option>
           <option value="2">中級（手堅い）</option>
           <option value="3" selected>上級（本格探索・初段級）</option>
         </select>
@@ -416,7 +379,7 @@
         <span id="coach-badge" class="coach-badge badge-ok">対局開始</span>
       </div>
       <div id="coach-body" class="coach-body">
-        対局を始めると、指した手とAI最善手の解説がここに表示されます。
+        対局を始めると、あなたが指した手とAI最善手の解説がここに表示されます。
       </div>
       <div id="coach-pv" class="coach-pv" style="display: none;">
         読み筋: -
@@ -444,12 +407,6 @@
         <button class="btn btn-unpromote" onclick="finishPromotion(false)">不成（ならず）</button>
       </div>
     </div>
-
-    <!-- ログ表示 -->
-    <div id="debug-console">
-      <div style="font-weight: bold; margin-bottom: 2px; color: #8b949e;">[エンジン診断ログ]</div>
-      <div id="debug-log-content"></div>
-    </div>
   </div>
 
   <script>
@@ -460,16 +417,26 @@
     const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
     const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
 
-    const USI_PIECE_TO_TYPE = { 'P': 'FU', 'L': 'KY', 'N': 'KE', 'S': 'GI', 'G': 'KI', 'B': 'KA', 'R': 'HI', 'K': 'OU' };
-    const TYPE_TO_USI_PIECE = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' };
     const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
 
+    // 駒の基本価値
+    const PIECE_VALS = {
+      FU: 100, KY: 320, KE: 420, GI: 620, KI: 680, KA: 950, HI: 1150, OU: 30000,
+      TO: 620, NY: 580, NK: 580, NG: 600, UM: 1200, RY: 1400
+    };
+
     const ASSIST_THRESHOLDS = {
-      '10k': 650,
-      '5k': 380,
-      '1d': 200,
-      '3d': 110,
-      'off': 999999
+      '10k': 650, '5k': 380, '1d': 200, '3d': 110, 'off': 999999
+    };
+
+    // 序盤定跡（代表的な立ち上がり）
+    const OPENING_BOOK = {
+      "": { move: "7g7f", comment: "角道を開け、主導権を握る現代将棋の標準的な初手です。" },
+      "7g7f": { move: "3c3d", comment: "お互いに角道を開け、激しい戦いや本格的な駒組みを目指す定番の応手です。" },
+      "7g7f 3c3d": { move: "2g2f", comment: "飛車先の歩を突き、先手から主導権を握りに行く居飛車党の代表的な手です。" },
+      "7g7f 3c3d 2g2f": { move: "8c8d", comment: "こちらも飛車先を突き返し、相居飛車の力戦を志向する堂々の一手です。" },
+      "7g7f 3c3d 2g2f 8c8d": { move: "2f2e", comment: "飛車先をさらに伸ばして相手の陣形を圧迫します。" },
+      "7g7f 3c3d 2g2f 8c8d 2f2e": { move: "8d8e", comment: "お互いに飛車先を伸ばし合い、緊張感が高まる局面です。" }
     };
 
     let board = [];
@@ -484,670 +451,38 @@
     let lastMove = null;
     let moveHistory = [];
     let usiHistory = [];
-
-    // ==========================================
-    // Fairy-Stockfish WASM ローダー
-    // ==========================================
-    let sfInstance = null;
-    let isEngineReady = false;
-    let currentEngineResolve = null;
     let currentEvalScore = 0;
-    let currentBestPv = [];
-
-    function initFairyStockfish() {
-      const factory = window.Stockfish || window.StockfishWeb || window.FairyStockfish;
-      if (typeof factory !== 'function') {
-        dbgLog('[FATAL] Stockfishローダーが見つかりません', true);
-        return;
-      }
-
-      const jsUrl = new URL('./stockfish.js', location.href).href;
-      dbgLog('メインスクリプト絶対パス: ' + jsUrl, false, false);
-
-      factory({
-        locateFile: (path) => new URL(path, location.href).href,
-        mainScriptUrlOrBlob: jsUrl
-      }).then((sf) => {
-        sfInstance = sf;
-        dbgLog('エンジン生成成功！ UCI設定中...', false, true);
-        sf.addMessageListener((line) => onEngineMessage(line));
-        sendToEngine('uci');
-      }).catch((err) => {
-        dbgLog('[FATAL] 初期化失敗: ' + (err && err.message ? err.message : String(err)), true);
-      });
-    }
-
-    function sendToEngine(cmd) {
-      if (sfInstance && typeof sfInstance.postMessage === 'function') {
-        sfInstance.postMessage(cmd);
-      }
-    }
-
-    function onEngineMessage(line) {
-      if (typeof line !== 'string') return;
-      line = line.trim();
-      if (!line) return;
-
-      if (line === 'uciok') {
-        dbgLog('< uciok 受信。将棋モードに設定', false, true);
-        sendToEngine('setoption name UCI_Variant value shogi');
-        sendToEngine('setoption name Threads value 1');
-        sendToEngine('setoption name Hash value 32');
-        sendToEngine('isready');
-      } else if (line === 'readyok') {
-        isEngineReady = true;
-        dbgLog('< readyok 受信！エンジン稼働完了', false, true);
-        document.getElementById('engine-indicator').classList.add('ready');
-        document.getElementById('engine-label').textContent = 'Fairy-Stockfish: 稼働中';
-        document.getElementById('status-box').textContent = '準備完了：あなたの手番です';
-      }
-
-      if (line.startsWith('info') && line.includes('score cp')) {
-        const parts = line.split(/\s+/);
-        const cpIdx = parts.indexOf('cp');
-        if (cpIdx !== -1 && parts[cpIdx + 1]) {
-          const cpVal = parseInt(parts[cpIdx + 1], 10);
-          currentEvalScore = (turn === 0) ? cpVal : -cpVal;
-          document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
-        }
-        const pvIdx = parts.indexOf('pv');
-        if (pvIdx !== -1) currentBestPv = parts.slice(pvIdx + 1);
-      }
-
-      if (line.startsWith('bestmove')) {
-        const parts = line.split(/\s+/);
-        const bestMoveStr = parts[1];
-        if (currentEngineResolve) {
-          currentEngineResolve({ bestMove: bestMoveStr, score: currentEvalScore, pv: currentBestPv });
-          currentEngineResolve = null;
-        }
-      }
-    }
-
-    function evaluateWithEngine(moves, timeMs = 1000) {
-      return new Promise((resolve) => {
-        if (!isEngineReady) {
-          resolve({ bestMove: null, score: 0, pv: [] });
-          return;
-        }
-        currentEngineResolve = resolve;
-        currentBestPv = [];
-        const movesCmd = moves.length > 0 ? ` moves ${moves.join(' ')}` : '';
-        sendToEngine(`position startpos${movesCmd}`);
-        sendToEngine(`go movetime ${timeMs}`);
-
-        setTimeout(() => {
-          if (currentEngineResolve) {
-            currentEngineResolve({ bestMove: null, score: currentEvalScore, pv: currentBestPv });
-            currentEngineResolve = null;
-          }
-        }, timeMs + 4000);
-      });
-    }
 
     // ==========================================
-    // 盤面管理
+    // 内蔵本格思考ルーチン
     // ==========================================
-    function initGame() {
-      board = Array(9).fill(null).map(() => Array(9).fill(null));
-      hands = { 0: {}, 1: {} };
-      HAND_ORDER.forEach(k => { hands[0][k] = 0; hands[1][k] = 0; });
-      turn = 0;
-      selectedSquare = null;
-      selectedDrop = null;
-      legalMoves = [];
-      isCpuBusy = false;
-      pendingPunish = null;
-      pendingPromotion = null;
-      lastMove = null;
-      moveHistory = [];
-      usiHistory = [];
-
-      const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
-      for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
-      board[1][1] = { type: 'HI', color: 1 };
-      board[1][7] = { type: 'KA', color: 1 };
-      for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
-
-      for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
-      board[7][1] = { type: 'KA', color: 0 };
-      board[7][7] = { type: 'HI', color: 0 };
-      const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
-      for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
-
-      document.getElementById('brake-modal').style.display = 'none';
-      document.getElementById('promote-modal').style.display = 'none';
-      document.getElementById('eval-display').textContent = '評価値: 0';
-      resetCoachCard();
-      buildBoardDOM();
-      updateDisplay();
-    }
-
-    function resetCoachCard() {
-      document.getElementById('coach-badge').className = 'coach-badge badge-ok';
-      document.getElementById('coach-badge').textContent = '対局開始';
-      document.getElementById('coach-body').textContent = '対局を始めると、指した手とAI最善手の解説がここに表示されます。';
-      document.getElementById('coach-pv').style.display = 'none';
-    }
-
-    function confirmReset() {
-      if (confirm('対局をリセットして初手からやり直しますか？')) {
-        initGame();
-        sendToEngine('ucinewgame');
-      }
-    }
-
-    function buildBoardDOM() {
-      const boardEl = document.getElementById('board');
-      boardEl.innerHTML = '';
+    function evaluateBoard(b, h) {
+      let score = 0;
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
-          const cell = document.createElement('div');
-          cell.className = 'cell';
-          cell.dataset.r = r;
-          cell.dataset.c = c;
-          boardEl.appendChild(cell);
-        }
-      }
-      boardEl.onclick = handleBoardClick;
-    }
-
-    function handleBoardClick(e) {
-      if (isCpuBusy || turn !== 0) return;
-      const cell = e.target.closest('.cell');
-      if (!cell) return;
-      const r = parseInt(cell.dataset.r, 10);
-      const c = parseInt(cell.dataset.c, 10);
-      onCellClick(r, c);
-    }
-
-    function updateDisplay(highlightAttacker = null, highlightTarget = null) {
-      const cells = document.querySelectorAll('#board .cell');
-      const senteKingInCheck = isKingInCheck(board, 0);
-
-      cells.forEach(cell => {
-        const r = parseInt(cell.dataset.r, 10);
-        const c = parseInt(cell.dataset.c, 10);
-        const piece = board[r][c];
-
-        cell.className = 'cell';
-        cell.textContent = piece ? KANJI[piece.type] : '';
-
-        if (piece) {
-          cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
-          if (piece.type === 'OU' && piece.color === 0 && senteKingInCheck) {
-            cell.classList.add('in-check');
+          const p = b[r][c];
+          if (!p) continue;
+          let val = PIECE_VALS[p.type] || 0;
+          if (p.color === 0) {
+            val += (8 - r) * 5;
+            if (c >= 3 && c <= 5) val += 15;
+            score += val;
+          } else {
+            val += r * 5;
+            if (c >= 3 && c <= 5) val += 15;
+            score -= val;
           }
         }
-
-        if (lastMove) {
-          if (lastMove.fromR === r && lastMove.fromC === c) cell.classList.add('last-move-from');
-          if (lastMove.toR === r && lastMove.toC === c) cell.classList.add('last-move-to');
-        }
-
-        if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) {
-          cell.classList.add('selected');
-        }
-
-        if (legalMoves.some(m => m.toR === r && m.toC === c)) {
-          cell.classList.add('movable');
-        }
-
-        if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) {
-          cell.classList.add('punish-attacker');
-        }
-        if (highlightTarget && highlightTarget.r === r && highlightTarget.c === c) {
-          cell.classList.add('punish-target');
-        }
+      }
+      HAND_ORDER.forEach(t => {
+        score += (h[0][t] || 0) * (PIECE_VALS[t] * 1.15);
+        score -= (h[1][t] || 0) * (PIECE_VALS[t] * 1.15);
       });
-
-      renderStand('sente-stand', 0);
-      renderStand('gote-stand', 1);
-
-      const statusEl = document.getElementById('status-box');
-      if (senteKingInCheck && !isCpuBusy && turn === 0) {
-        statusEl.textContent = '⚠️ 王手されています！玉を逃げるか防いでください';
-      }
+      score += evaluateKingSafety(b, 0) - evaluateKingSafety(b, 1);
+      return score;
     }
 
-    function renderStand(elId, color) {
-      const el = document.getElementById(elId);
-      el.innerHTML = '';
-      let hasAny = false;
-
-      HAND_ORDER.forEach(type => {
-        const count = hands[color][type] || 0;
-        if (count > 0) {
-          hasAny = true;
-          const chip = document.createElement('div');
-          chip.className = 'stand-piece';
-          chip.textContent = `${KANJI[type]}${count > 1 ? '×' + count : ''}`;
-
-          if (color === 0 && selectedDrop === type) chip.classList.add('selected');
-
-          if (color === 0 && !isCpuBusy && turn === 0) {
-            chip.onclick = () => onSelectDrop(type);
-          }
-          el.appendChild(chip);
-        }
-      });
-      if (!hasAny) el.textContent = 'なし';
-    }
-
-    function onSelectDrop(type) {
-      if (selectedDrop === type) {
-        selectedDrop = null;
-        legalMoves = [];
-        document.getElementById('status-box').textContent = '持ち駒の選択を解除しました';
-        updateDisplay();
-        return;
-      }
-      selectedSquare = null;
-      selectedDrop = type;
-      legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.drop === type);
-      document.getElementById('status-box').textContent = `${KANJI[type]} を打つマス（緑色）を選んでください`;
-      updateDisplay();
-    }
-
-    function onCellClick(r, c) {
-      const targetMove = legalMoves.find(m => m.toR === r && m.toC === c);
-
-      if (targetMove) {
-        const piece = targetMove.drop ? null : board[targetMove.from.r][targetMove.from.c];
-        const canPromote = piece && PROMOTE_MAP[piece.type] && (targetMove.toR <= 2 || targetMove.from.r <= 2);
-
-        const mustPromote = piece && (
-          (piece.type === 'FU' || piece.type === 'KY') && targetMove.toR === 0
-        ) || (piece.type === 'KE' && targetMove.toR <= 1);
-
-        if (mustPromote) {
-          processPlayerMove(targetMove, true);
-        } else if (canPromote) {
-          isCpuBusy = true;
-          pendingPromotion = targetMove;
-          document.getElementById('promote-modal').style.display = 'block';
-        } else {
-          processPlayerMove(targetMove, false);
-        }
-        return;
-      }
-
-      if (selectedDrop) {
-        explainWhyCannotDrop(selectedDrop, r, c);
-        return;
-      }
-
-      const piece = board[r][c];
-      if (piece && piece.color === 0) {
-        selectedDrop = null;
-        selectedSquare = { r, c };
-        legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.from && m.from.r === r && m.from.c === c);
-        document.getElementById('status-box').textContent = `${KANJI[piece.type]} を選択中`;
-        updateDisplay();
-      } else {
-        selectedSquare = null;
-        selectedDrop = null;
-        legalMoves = [];
-        updateDisplay();
-      }
-    }
-
-    function explainWhyCannotDrop(type, r, c) {
-      const statusEl = document.getElementById('status-box');
-      if (board[r][c]) {
-        statusEl.textContent = '※すでに駒があるマスには打てません';
-        return;
-      }
-      if ((type === 'FU' || type === 'KY') && r === 0) {
-        statusEl.textContent = `※${KANJI[type]}はこれ以上前に進めない1段目には打てません（反則ルール）`;
-        return;
-      }
-      if (type === 'KE' && r <= 1) {
-        statusEl.textContent = '※桂馬は前方に跳べなくなる1〜2段目には打てません（反則ルール）';
-        return;
-      }
-      if (type === 'FU') {
-        let hasFu = false;
-        for (let tr = 0; tr < 9; tr++) {
-          const p = board[tr][c];
-          if (p && p.color === 0 && p.type === 'FU') { hasFu = true; break; }
-        }
-        if (hasFu) {
-          statusEl.textContent = '※その筋（縦列）にはすでに歩があります（二歩の反則）';
-          return;
-        }
-      }
-      if (isKingInCheck(board, 0)) {
-        statusEl.textContent = '※王手されているため、玉の王手を防ぐマスにしか打てません';
-        return;
-      }
-      statusEl.textContent = '※そのマスには打てません。緑色に光るマスを選んでください';
-    }
-
-    function finishPromotion(promote) {
-      document.getElementById('promote-modal').style.display = 'none';
-      if (pendingPromotion) {
-        const move = pendingPromotion;
-        pendingPromotion = null;
-        processPlayerMove(move, promote);
-      }
-    }
-
-    function moveToUsi(move, promote) {
-      const files = ['9','8','7','6','5','4','3','2','1'];
-      const ranks = ['a','b','c','d','e','f','g','h','i'];
-
-      if (move.drop) {
-        const letter = TYPE_TO_USI_PIECE[move.drop];
-        return `${letter}*${files[move.toC]}${ranks[move.toR]}`;
-      } else {
-        const fromFile = files[move.from.c];
-        const fromRank = ranks[move.from.r];
-        const toFile = files[move.toC];
-        const toRank = ranks[move.toR];
-        return `${fromFile}${fromRank}${toFile}${toRank}${promote ? '+' : ''}`;
-      }
-    }
-
-    function usiToMove(usi) {
-      if (!usi || usi === '(none)') return null;
-      const files = ['9','8','7','6','5','4','3','2','1'];
-      const ranks = ['a','b','c','d','e','f','g','h','i'];
-
-      if (usi.includes('*')) {
-        const pieceLetter = usi[0];
-        const type = USI_PIECE_TO_TYPE[pieceLetter];
-        const toC = files.indexOf(usi[2]);
-        const toR = ranks.indexOf(usi[3]);
-        return { from: null, toR, toC, drop: type, promote: false };
-      } else {
-        const fromC = files.indexOf(usi[0]);
-        const fromR = ranks.indexOf(usi[1]);
-        const toC = files.indexOf(usi[2]);
-        const toR = ranks.indexOf(usi[3]);
-        const promote = usi.endsWith('+');
-        return { from: { r: fromR, c: fromC }, toR, toC, drop: null, promote };
-      }
-    }
-
-    function formatUsiToJapanese(usi, currentBoard, isSente = true) {
-      if (!usi || usi === '(none)') return '特になし';
-      const m = usiToMove(usi);
-      if (!m) return usi;
-
-      const fileKanji = ['９','８','７','６','５','４','３','２','１'];
-      const rankKanji = ['一','二','三','四','五','六','七','八','九'];
-      const mark = isSente ? '▲' : '△';
-
-      if (m.drop) {
-        return `${mark}${fileKanji[m.toC]}${rankKanji[m.toR]}${KANJI[m.drop]}打`;
-      } else {
-        const origPiece = currentBoard[m.from.r][m.from.c];
-        const pieceKanji = origPiece ? KANJI[origPiece.type] : '';
-        const promStr = m.promote ? '成' : '';
-        return `${mark}${fileKanji[m.toC]}${rankKanji[m.toR]}${pieceKanji}${promStr}`;
-      }
-    }
-
-    function generateMoveExplanation(move, bestMoveUsi, loss, preBoard) {
-      const movedPiece = move.drop ? { type: move.drop } : preBoard[move.from.r][move.from.c];
-      const targetPiece = preBoard[move.toR][move.toC];
-      const pName = movedPiece ? KANJI[movedPiece.type] : '駒';
-
-      if (targetPiece) return `相手の ${KANJI[targetPiece.type]} を召し捕り、戦力差を拡大する手です。`;
-      if (move.promote) return `敵陣を突破して ${pName} を成ることで、攻撃力を大幅に高めました。`;
-      if (movedPiece && (movedPiece.type === 'KI' || movedPiece.type === 'GI') && move.toR >= 6) return `金銀を玉に寄せて守りの陣形（囲い）を固める手です。`;
-      if (movedPiece && (movedPiece.type === 'HI' || movedPiece.type === 'KA')) return `大駒の射程を盤面全体に通し、主導権を握りに行く手です。`;
-      if (move.drop) return `持ち駒の ${pName} を要所に打ち込み、前線を補強する手です。`;
-      return `歩を進めて前線を押し上げ、攻めの足がかりを築く自然な一手です。`;
-    }
-
-    // ==========================================
-    // 着手処理 ＆ AIコーチ解説
-    // ==========================================
-    async function processPlayerMove(move, promote) {
-      isCpuBusy = true;
-      document.getElementById('status-box').textContent = 'Fairy-Stockfish が深層解析中...';
-
-      const assistLevel = document.getElementById('assist-level').value;
-      const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
-
-      const preAnalysis = await evaluateWithEngine(usiHistory, 900);
-      const preScore = preAnalysis.score;
-      const recommendedUsi = preAnalysis.bestMove;
-      const enginePv = preAnalysis.pv;
-
-      const playerUsi = moveToUsi(move, promote);
-      const candidateUsiHistory = [...usiHistory, playerUsi];
-
-      const postAnalysis = await evaluateWithEngine(candidateUsiHistory, 1000);
-      const postScore = postAnalysis.score;
-
-      const loss = preScore - postScore;
-
-      if (assistLevel !== 'off' && isEngineReady && loss >= threshold) {
-        const killerMove = usiToMove(postAnalysis.bestMove);
-        pendingPunish = killerMove;
-
-        saveHistory();
-        executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
-        lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
-        updateDisplay();
-
-        const levelNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
-        document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
-        document.getElementById('brake-msg').textContent = `【${levelNames[assistLevel]}基準】その手を指すとエンジンに厳しい反撃を突かれ、形勢を損ねてしまいます。`;
-        document.getElementById('brake-modal').style.display = 'block';
-
-        updateCoachCard('badge-bad', '⚠️ 悪手警告', `評価値が ${Math.round(loss)}点 急落しました。最善手は ${formatUsiToJapanese(recommendedUsi, board, true)} でした。`, enginePv);
-        return;
-      }
-
-      const moveExp = generateMoveExplanation(move, recommendedUsi, loss, board);
-      const playerJp = formatUsiToJapanese(playerUsi, board, true);
-      const bestJp = formatUsiToJapanese(recommendedUsi, board, true);
-
-      if (playerUsi === recommendedUsi || loss <= 35) {
-        updateCoachCard('badge-good', '🌟 好手・最善手！', `指し手 ${playerJp} はAIの第一推奨手です！ ${moveExp}`, enginePv);
-      } else if (loss <= 130) {
-        updateCoachCard('badge-ok', '👍 合格手', `指し手 ${playerJp} は手堅い一手です。 ${moveExp} （AI最善手は ${bestJp}）`, enginePv);
-      } else {
-        updateCoachCard('badge-warn', '⚡ 緩手（少し疑問）', `指し手 ${playerJp} で少し形勢を損ねました（−${Math.round(loss)}点）。AIは ${bestJp} を推奨していました。`, enginePv);
-      }
-
-      saveHistory();
-      usiHistory.push(playerUsi);
-      executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
-      lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
-
-      selectedSquare = null;
-      selectedDrop = null;
-      legalMoves = [];
-      updateDisplay();
-
-      passTurnToCpu();
-    }
-
-    function updateCoachCard(badgeClass, badgeText, bodyText, pvArray) {
-      const badgeEl = document.getElementById('coach-badge');
-      badgeEl.className = `coach-badge ${badgeClass}`;
-      badgeEl.textContent = badgeText;
-      document.getElementById('coach-body').textContent = bodyText;
-
-      const pvEl = document.getElementById('coach-pv');
-      if (pvArray && pvArray.length > 0) {
-        let simB = JSON.parse(JSON.stringify(board));
-        let pvStrList = [];
-        let isSenteTurn = true;
-
-        for (let i = 0; i < Math.min(4, pvArray.length); i++) {
-          const u = pvArray[i];
-          const jpStr = formatUsiToJapanese(u, simB, isSenteTurn);
-          pvStrList.push(jpStr);
-          const m = usiToMove(u);
-          if (m) executeMoveOnBoard(simB, {0:{},1:{}}, isSenteTurn ? 0 : 1, m.from, m.drop, m.toR, m.toC, m.promote);
-          isSenteTurn = !isSenteTurn;
-        }
-
-        pvEl.textContent = '読み筋: ' + pvStrList.join(' ');
-        pvEl.style.display = 'block';
-      } else {
-        pvEl.style.display = 'none';
-      }
-    }
-
-    function showWhyBlunder() {
-      document.getElementById('brake-modal').style.display = 'none';
-      if (!pendingPunish) { undoMove(); return; }
-
-      const p = pendingPunish;
-      isCpuBusy = true;
-
-      const attackerPos = p.from ? { r: p.from.r, c: p.from.c } : null;
-      const targetPos = { r: p.toR, c: p.toC };
-      updateDisplay(attackerPos, targetPos);
-      document.getElementById('status-box').textContent = '⚠️ Fairy-Stockfish の推奨反撃手順を再生中...';
-
-      setTimeout(() => {
-        executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, p.promote);
-        updateDisplay();
-        document.getElementById('status-box').textContent = '💥 相手に厳しい手を突かれてしまいました！';
-
-        setTimeout(() => {
-          undoMove();
-          document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
-        }, 1800);
-      }, 1000);
-    }
-
-    function undoMove() {
-      if (moveHistory.length > 0) {
-        const prev = moveHistory.pop();
-        usiHistory.pop();
-        board = JSON.parse(prev.board);
-        hands = JSON.parse(prev.hands);
-        lastMove = prev.lastMove ? JSON.parse(prev.lastMove) : null;
-        turn = 0;
-      }
-      isCpuBusy = false;
-      pendingPunish = null;
-      document.getElementById('brake-modal').style.display = 'none';
-      updateDisplay();
-    }
-
-    function continueMove() {
-      document.getElementById('brake-modal').style.display = 'none';
-      isCpuBusy = false;
-      pendingPunish = null;
-      document.getElementById('status-box').textContent = 'そのまま続行します。';
-      passTurnToCpu();
-    }
-
-    function undoSingleMove() {
-      if (isCpuBusy || moveHistory.length === 0) return;
-      undoMove();
-      document.getElementById('status-box').textContent = '1手前の状態に戻しました';
-    }
-
-    function saveHistory() {
-      moveHistory.push({
-        board: JSON.stringify(board),
-        hands: JSON.stringify(hands),
-        lastMove: lastMove ? JSON.stringify(lastMove) : null
-      });
-    }
-
-    // ==========================================
-    // CPU思考（Fairy-Stockfish）
-    // ==========================================
-    async function passTurnToCpu() {
-      turn = 1;
-      isCpuBusy = true;
-      document.getElementById('status-box').textContent = '相手（CPU）が深層思考中...';
-
-      const cpuLegal = getStrictLegalMoves(board, hands, 1);
-      if (cpuLegal.length === 0) {
-        if (isKingInCheck(board, 1)) alert('お見事！詰みです。あなたの勝ちです！');
-        else alert('ステイルメイトです（引き分け）。');
-        isCpuBusy = false;
-        return;
-      }
-
-      const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
-      let selectedMove = null;
-
-      if (isEngineReady && cpuLevel >= 2) {
-        const timeMs = cpuLevel === 3 ? 1200 : 500;
-        const analysis = await evaluateWithEngine(usiHistory, timeMs);
-        const parsed = usiToMove(analysis.bestMove);
-        if (parsed) {
-          const valid = cpuLegal.find(m => 
-            (m.drop ? (m.drop === parsed.drop && m.toR === parsed.toR && m.toC === parsed.toC) :
-                      (m.from && m.from.r === parsed.from.r && m.from.c === parsed.from.c && m.toR === parsed.toR && m.toC === parsed.toC))
-          );
-          if (valid) selectedMove = { ...valid, promote: parsed.promote };
-        }
-      }
-
-      if (!selectedMove) {
-        selectedMove = cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
-        selectedMove.promote = (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6));
-      }
-
-      usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
-      executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
-      lastMove = { fromR: selectedMove.from ? selectedMove.from.r : null, fromC: selectedMove.from ? selectedMove.from.c : null, toR: selectedMove.toR, toC: selectedMove.toC };
-
-      turn = 0;
-      isCpuBusy = false;
-
-      const playerLegal = getStrictLegalMoves(board, hands, 0);
-      if (playerLegal.length === 0) {
-        if (isKingInCheck(board, 0)) alert('詰みです...あなたの負けです。');
-        else alert('指し手がありません（引き分け）。');
-        return;
-      }
-
-      document.getElementById('status-box').textContent = 'あなたの番です';
-      updateDisplay();
-    }
-
-    function executeMoveOnBoard(b, h, color, from, drop, toR, toC, promote) {
-      if (drop) {
-        b[toR][toC] = { type: drop, color: color };
-        h[color][drop]--;
-      } else {
-        const piece = b[from.r][from.c];
-        const dest = b[toR][toC];
-
-        if (dest) {
-          const raw = RAW_MAP[dest.type] || dest.type;
-          h[color][raw] = (h[color][raw] || 0) + 1;
-        }
-
-        let newType = piece.type;
-        if (promote && PROMOTE_MAP[piece.type]) newType = PROMOTE_MAP[piece.type];
-
-        b[toR][toC] = { type: newType, color: color };
-        b[from.r][from.c] = null;
-      }
-    }
-
-    function getStrictLegalMoves(b, h, color) {
-      const candidates = getCandidateMoves(b, h, color);
-      const legal = [];
-
-      for (const m of candidates) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, false);
-
-        if (!isKingInCheck(simB, color)) legal.push(m);
-      }
-      return legal;
-    }
-
-    function isKingInCheck(b, color) {
+    function evaluateKingSafety(b, color) {
       let kr = -1, kc = -1;
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
@@ -1158,50 +493,470 @@
         }
         if (kr !== -1) break;
       }
+      if (kr === -1) return -9999;
+
+      let safety = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = kr + dr, nc = kc + dc;
+          if (nr >= 0 && nr < 9 && nc >= 0 && nc < 9) {
+            const p = b[nr][nc];
+            if (p && p.color === color) {
+              if (p.type === 'KI' || p.type === 'GI' || p.type === 'TO' || p.type === 'NY' || p.type === 'NK' || p.type === 'NG') {
+                safety += 45;
+              }
+            }
+          }
+        }
+      }
+      // 王様特攻ペナルティ（これで5一のような無謀な前進を防ぎます）
+      if (color === 0 && kr <= 6) safety -= (7 - kr) * 80;
+      if (color === 1 && kr >= 2) safety -= (kr - 1) * 80;
+
+      return safety;
+    }
+
+    function quiescenceSearch(b, h, color, alpha, beta, depth) {
+      const standPat = (color === 0) ? evaluateBoard(b, h) : -evaluateBoard(b, h);
+      if (depth <= 0) return standPat;
+      if (standPat >= beta) return beta;
+      if (standPat > alpha) alpha = standPat;
+
+      const captures = getStrictLegalMoves(b, h, color).filter(m => !m.drop && b[m.toR][m.toC]);
+      captures.sort((x, y) => (PIECE_VALS[b[y.toR][y.toC].type] || 0) - (PIECE_VALS[b[x.toR][x.toC].type] || 0));
+
+      for (const m of captures) {
+        const simB = JSON.parse(JSON.stringify(b));
+        const simH = JSON.parse(JSON.stringify(h));
+        const canProm = (color === 0 && (m.toR <= 2 || m.from.r <= 2)) || (color === 1 && (m.toR >= 6 || m.from.r >= 6));
+        executeMoveOnBoard(simB, simH, color, m.from, null, m.toR, m.toC, canProm);
+
+        const score = -quiescenceSearch(simB, simH, 1 - color, -beta, -alpha, depth - 1);
+        if (score >= beta) return beta;
+        if (score > alpha) alpha = score;
+      }
+      return alpha;
+    }
+
+    function alphaBetaSearch(b, h, color, depth, alpha, beta) {
+      if (depth <= 0) return quiescenceSearch(b, h, color, alpha, beta, 4);
+
+      const legal = getStrictLegalMoves(b, h, color);
+      if (legal.length === 0) return isKingInCheck(b, color) ? -28000 : 0;
+
+      legal.sort((x, y) => {
+        let scoreX = 0, scoreY = 0;
+        if (!x.drop && b[x.toR][x.toC]) scoreX += (PIECE_VALS[b[x.toR][x.toC].type] || 0) * 10;
+        if (!y.drop && b[y.toR][y.toC]) scoreY += (PIECE_VALS[b[y.toR][y.toC].type] || 0) * 10;
+        return scoreY - scoreX;
+      });
+
+      for (const m of legal) {
+        const simB = JSON.parse(JSON.stringify(b));
+        const simH = JSON.parse(JSON.stringify(h));
+        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
+                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
+        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
+
+        const score = -alphaBetaSearch(simB, simH, 1 - color, depth - 1, -beta, -alpha);
+        if (score >= beta) return beta;
+        if (score > alpha) alpha = score;
+      }
+      return alpha;
+    }
+
+    function analyzePosition(b, h, color, depth = 3) {
+      const movesKey = usiHistory.join(" ");
+      if (OPENING_BOOK[movesKey]) {
+        const bookEntry = OPENING_BOOK[movesKey];
+        const m = usiToMove(bookEntry.move);
+        return { bestMove: bookEntry.move, bestObj: m, score: 0, pv: [bookEntry.move], isBook: true, comment: bookEntry.comment };
+      }
+
+      const legal = getStrictLegalMoves(b, h, color);
+      if (legal.length === 0) return { bestMove: null, score: 0, pv: [] };
+
+      legal.sort((x, y) => {
+        let scoreX = 0, scoreY = 0;
+        if (!x.drop && b[x.toR][x.toC]) scoreX += (PIECE_VALS[b[x.toR][x.toC].type] || 0) * 10;
+        if (!y.drop && b[y.toR][y.toC]) scoreY += (PIECE_VALS[b[y.toR][y.toC].type] || 0) * 10;
+        return scoreY - scoreX;
+      });
+
+      let bestVal = -999999;
+      let bestMoveObj = legal[0];
+
+      for (const m of legal) {
+        const simB = JSON.parse(JSON.stringify(b));
+        const simH = JSON.parse(JSON.stringify(h));
+        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
+                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
+        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
+
+        const val = -alphaBetaSearch(simB, simH, 1 - color, depth - 1, -999999, 999999);
+        if (val > bestVal) { bestVal = val; bestMoveObj = m; }
+      }
+
+      const canPromBest = (color === 0 && (bestMoveObj.toR <= 2 || (bestMoveObj.from && bestMoveObj.from.r <= 2))) ||
+                          (color === 1 && (bestMoveObj.toR >= 6 || (bestMoveObj.from && bestMoveObj.from.r >= 6)));
+      const bestUsi = moveToUsi(bestMoveObj, canPromBest);
+
+      return { bestMove: bestUsi, bestObj: { ...bestMoveObj, promote: canPromBest }, score: (color === 0) ? bestVal : -bestVal, pv: [bestUsi], isBook: false };
+    }
+
+    // ==========================================
+    // 盤面管理・ゲームループ
+    // ==========================================
+    function initGame() {
+      board = Array(9).fill(null).map(() => Array(9).fill(null));
+      hands = { 0: {}, 1: {} };
+      HAND_ORDER.forEach(k => { hands[0][k] = 0; hands[1][k] = 0; });
+      turn = 0;
+      selectedSquare = null; selectedDrop = null; legalMoves = [];
+      isCpuBusy = false; pendingPunish = null; pendingPromotion = null; lastMove = null;
+      moveHistory = []; usiHistory = []; currentEvalScore = 0;
+
+      const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
+      board[1][1] = { type: 'HI', color: 1 }; board[1][7] = { type: 'KA', color: 1 };
+      for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
+      for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
+      board[7][1] = { type: 'KA', color: 0 }; board[7][7] = { type: 'HI', color: 0 };
+      const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
+      for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
+
+      document.getElementById('brake-modal').style.display = 'none';
+      document.getElementById('promote-modal').style.display = 'none';
+      document.getElementById('eval-display').textContent = '評価値: 0';
+      resetCoachCard(); buildBoardDOM(); updateDisplay();
+    }
+
+    function resetCoachCard() {
+      document.getElementById('coach-badge').className = 'coach-badge badge-ok';
+      document.getElementById('coach-badge').textContent = '対局開始';
+      document.getElementById('coach-body').textContent = '対局を始めると、解説がここに表示されます。';
+      document.getElementById('coach-pv').style.display = 'none';
+    }
+
+    function confirmReset() { if (confirm('対局をリセットして初手からやり直しますか？')) initGame(); }
+
+    function buildBoardDOM() {
+      const boardEl = document.getElementById('board');
+      boardEl.innerHTML = '';
+      for (let r = 0; r < 9; r++) {
+        for (let c = 0; c < 9; c++) {
+          const cell = document.createElement('div');
+          cell.className = 'cell'; cell.dataset.r = r; cell.dataset.c = c;
+          boardEl.appendChild(cell);
+        }
+      }
+      boardEl.onclick = handleBoardClick;
+    }
+
+    function handleBoardClick(e) {
+      if (isCpuBusy || turn !== 0) return;
+      const cell = e.target.closest('.cell');
+      if (!cell) return;
+      onCellClick(parseInt(cell.dataset.r, 10), parseInt(cell.dataset.c, 10));
+    }
+
+    function updateDisplay(highlightAttacker = null, highlightTarget = null) {
+      const cells = document.querySelectorAll('#board .cell');
+      const senteKingInCheck = isKingInCheck(board, 0);
+
+      cells.forEach(cell => {
+        const r = parseInt(cell.dataset.r, 10);
+        const c = parseInt(cell.dataset.c, 10);
+        const piece = board[r][c];
+        cell.className = 'cell';
+        cell.textContent = piece ? KANJI[piece.type] : '';
+        if (piece) {
+          cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
+          if (piece.type === 'OU' && piece.color === 0 && senteKingInCheck) cell.classList.add('in-check');
+        }
+        if (lastMove && ((lastMove.fromR === r && lastMove.fromC === c) || (lastMove.toR === r && lastMove.toC === c))) {
+          cell.classList.add(lastMove.fromR === r && lastMove.fromC === c ? 'last-move-from' : 'last-move-to');
+        }
+        if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) cell.classList.add('selected');
+        if (legalMoves.some(m => m.toR === r && m.toC === c)) cell.classList.add('movable');
+        if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) cell.classList.add('punish-attacker');
+        if (highlightTarget && highlightTarget.r === r && highlightTarget.c === c) cell.classList.add('punish-target');
+      });
+
+      renderStand('sente-stand', 0); renderStand('gote-stand', 1);
+      const statusEl = document.getElementById('status-box');
+      if (senteKingInCheck && !isCpuBusy && turn === 0) statusEl.textContent = '⚠️ 王手されています！';
+    }
+
+    function renderStand(elId, color) {
+      const el = document.getElementById(elId); el.innerHTML = '';
+      let hasAny = false;
+      HAND_ORDER.forEach(type => {
+        const count = hands[color][type] || 0;
+        if (count > 0) {
+          hasAny = true;
+          const chip = document.createElement('div');
+          chip.className = 'stand-piece';
+          chip.textContent = `${KANJI[type]}${count > 1 ? '×' + count : ''}`;
+          if (color === 0 && selectedDrop === type) chip.classList.add('selected');
+          if (color === 0 && !isCpuBusy && turn === 0) chip.onclick = () => onSelectDrop(type);
+          el.appendChild(chip);
+        }
+      });
+      if (!hasAny) el.textContent = 'なし';
+    }
+
+    function onSelectDrop(type) {
+      if (selectedDrop === type) { selectedDrop = null; legalMoves = []; updateDisplay(); return; }
+      selectedSquare = null; selectedDrop = type;
+      legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.drop === type);
+      updateDisplay();
+    }
+
+    function onCellClick(r, c) {
+      const targetMove = legalMoves.find(m => m.toR === r && m.toC === c);
+      if (targetMove) {
+        const piece = targetMove.drop ? null : board[targetMove.from.r][targetMove.from.c];
+        const canPromote = piece && PROMOTE_MAP[piece.type] && (targetMove.toR <= 2 || targetMove.from.r <= 2);
+        const mustPromote = piece && ((piece.type === 'FU' || piece.type === 'KY') && targetMove.toR === 0) || (piece.type === 'KE' && targetMove.toR <= 1);
+
+        if (mustPromote) processPlayerMove(targetMove, true);
+        else if (canPromote) { isCpuBusy = true; pendingPromotion = targetMove; document.getElementById('promote-modal').style.display = 'block'; }
+        else processPlayerMove(targetMove, false);
+        return;
+      }
+      const piece = board[r][c];
+      if (piece && piece.color === 0) {
+        selectedDrop = null; selectedSquare = { r, c };
+        legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.from && m.from.r === r && m.from.c === c);
+        updateDisplay();
+      } else { selectedSquare = null; selectedDrop = null; legalMoves = []; updateDisplay(); }
+    }
+
+    function finishPromotion(promote) {
+      document.getElementById('promote-modal').style.display = 'none';
+      if (pendingPromotion) { const move = pendingPromotion; pendingPromotion = null; processPlayerMove(move, promote); }
+    }
+
+    function moveToUsi(move, promote) {
+      const files = ['9','8','7','6','5','4','3','2','1'], ranks = ['a','b','c','d','e','f','g','h','i'];
+      if (move.drop) {
+        const tl = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' }[move.drop];
+        return `${tl}*${files[move.toC]}${ranks[move.toR]}`;
+      } else {
+        return `${files[move.from.c]}${ranks[move.from.r]}${files[move.toC]}${ranks[move.toR]}${promote ? '+' : ''}`;
+      }
+    }
+
+    function usiToMove(usi) {
+      const files = ['9','8','7','6','5','4','3','2','1'], ranks = ['a','b','c','d','e','f','g','h','i'];
+      const tm = { 'P': 'FU', 'L': 'KY', 'N': 'KE', 'S': 'GI', 'G': 'KI', 'B': 'KA', 'R': 'HI' };
+      if (usi.includes('*')) return { from: null, toR: ranks.indexOf(usi[3]), toC: files.indexOf(usi[2]), drop: tm[usi[0]], promote: false };
+      else return { from: { r: ranks.indexOf(usi[1]), c: files.indexOf(usi[0]) }, toR: ranks.indexOf(usi[3]), toC: files.indexOf(usi[2]), drop: null, promote: usi.endsWith('+') };
+    }
+
+    function formatUsiToJapanese(usi, currentBoard, isSente = true) {
+      const m = usiToMove(usi); if (!m) return usi;
+      const fK = ['９','８','７','６','５','４','３','２','１'], rK = ['一','二','三','四','五','六','七','八','九'], mark = isSente ? '▲' : '△';
+      if (m.drop) return `${mark}${fK[m.toC]}${rK[m.toR]}${KANJI[m.drop]}打`;
+      else {
+        const p = currentBoard[m.from.r][m.from.c];
+        return `${mark}${fK[m.toC]}${rK[m.toR]}${p ? KANJI[p.type] : ''}${m.promote ? '成' : ''}`;
+      }
+    }
+
+    function generateMoveExplanation(move, bestMoveUsi, loss, preBoard, bookComment) {
+      if (bookComment) return bookComment;
+      const movedPiece = move.drop ? { type: move.drop } : preBoard[move.from.r][move.from.c];
+      const targetPiece = preBoard[move.toR][move.toC];
+      const pName = movedPiece ? KANJI[movedPiece.type] : '駒';
+      if (targetPiece) return `相手の ${KANJI[targetPiece.type]} を召し捕る手です。`;
+      if (move.promote) return `敵陣を突破して ${pName} を成ることで攻撃力を高めました。`;
+      if (move.drop) return `持ち駒の ${pName} を要所に打ち込みました。`;
+      return `自然な一手です。`;
+    }
+
+    function processPlayerMove(move, promote) {
+      isCpuBusy = true;
+      document.getElementById('status-box').textContent = 'AIが深層解析中...';
+      
+      setTimeout(() => {
+        const assistLevel = document.getElementById('assist-level').value;
+        const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
+        
+        const preAnalysis = analyzePosition(board, hands, 0, 3);
+        const preScore = preAnalysis.score;
+        const recommendedUsi = preAnalysis.bestMove;
+
+        const simB = JSON.parse(JSON.stringify(board)), simH = JSON.parse(JSON.stringify(hands));
+        executeMoveOnBoard(simB, simH, 0, move.from, move.drop, move.toR, move.toC, promote);
+        const postAnalysis = analyzePosition(simB, simH, 1, 3);
+        const postScore = postAnalysis.score;
+        const loss = preScore - postScore;
+
+        currentEvalScore = postScore;
+        document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
+
+        if (assistLevel !== 'off' && !preAnalysis.isBook && loss >= threshold && postAnalysis.bestObj) {
+          pendingPunish = postAnalysis.bestObj;
+          saveHistory();
+          executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
+          lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
+          updateDisplay();
+
+          const lNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
+          document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
+          document.getElementById('brake-msg').textContent = `【${lNames[assistLevel]}基準】厳しい反撃を突かれ、形勢を損ねてしまいます。`;
+          document.getElementById('brake-modal').style.display = 'block';
+          updateCoachCard('badge-bad', '⚠️ 悪手警告', `最善手は ${formatUsiToJapanese(recommendedUsi, board, true)} でした。`, preAnalysis.pv);
+          return;
+        }
+
+        const playerUsi = moveToUsi(move, promote);
+        const moveExp = generateMoveExplanation(move, recommendedUsi, loss, board, preAnalysis.isBook ? preAnalysis.comment : null);
+        const playerJp = formatUsiToJapanese(playerUsi, board, true);
+        const bestJp = formatUsiToJapanese(recommendedUsi, board, true);
+
+        if (preAnalysis.isBook || playerUsi === recommendedUsi || loss <= 35) updateCoachCard('badge-good', '🌟 好手・定跡手！', `${playerJp} はAI第一推奨です！ ${moveExp}`, preAnalysis.pv);
+        else if (loss <= 130) updateCoachCard('badge-ok', '👍 合格手', `${playerJp} は手堅い一手です。（AI最善手は ${bestJp}）`, preAnalysis.pv);
+        else updateCoachCard('badge-warn', '⚡ 緩手（少し疑問）', `${playerJp} で少し形勢を損ねました。AIは ${bestJp} を推奨していました。`, preAnalysis.pv);
+
+        saveHistory(); usiHistory.push(playerUsi);
+        executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
+        lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
+        selectedSquare = null; selectedDrop = null; legalMoves = []; updateDisplay();
+        passTurnToCpu();
+      }, 50);
+    }
+
+    function updateCoachCard(badgeClass, badgeText, bodyText, pvArray) {
+      const badgeEl = document.getElementById('coach-badge');
+      badgeEl.className = `coach-badge ${badgeClass}`; badgeEl.textContent = badgeText;
+      document.getElementById('coach-body').textContent = bodyText;
+      const pvEl = document.getElementById('coach-pv');
+      if (pvArray && pvArray.length > 0) {
+        pvEl.textContent = '推奨手: ' + formatUsiToJapanese(pvArray[0], board, true);
+        pvEl.style.display = 'block';
+      } else pvEl.style.display = 'none';
+    }
+
+    function showWhyBlunder() {
+      document.getElementById('brake-modal').style.display = 'none';
+      if (!pendingPunish) { undoMove(); return; }
+      isCpuBusy = true;
+      const p = pendingPunish;
+      updateDisplay(p.from ? { r: p.from.r, c: p.from.c } : null, { r: p.toR, c: p.toC });
+      document.getElementById('status-box').textContent = '⚠️ AIの推奨反撃手順を再生中...';
+      setTimeout(() => {
+        executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, p.promote);
+        updateDisplay();
+        document.getElementById('status-box').textContent = '💥 相手に厳しい手を突かれてしまいました！';
+        setTimeout(() => {
+          undoMove();
+          document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
+        }, 1800);
+      }, 1000);
+    }
+
+    function undoMove() {
+      if (moveHistory.length > 0) {
+        const prev = moveHistory.pop(); usiHistory.pop();
+        board = JSON.parse(prev.board); hands = JSON.parse(prev.hands);
+        lastMove = prev.lastMove ? JSON.parse(prev.lastMove) : null; turn = 0;
+      }
+      isCpuBusy = false; pendingPunish = null; document.getElementById('brake-modal').style.display = 'none'; updateDisplay();
+    }
+
+    function continueMove() {
+      document.getElementById('brake-modal').style.display = 'none'; isCpuBusy = false; pendingPunish = null;
+      document.getElementById('status-box').textContent = 'そのまま続行します。'; passTurnToCpu();
+    }
+    function undoSingleMove() {
+      if (isCpuBusy || moveHistory.length === 0) return; undoMove();
+      document.getElementById('status-box').textContent = '1手前の状態に戻しました';
+    }
+    function saveHistory() { moveHistory.push({ board: JSON.stringify(board), hands: JSON.stringify(hands), lastMove: lastMove ? JSON.stringify(lastMove) : null }); }
+
+    function passTurnToCpu() {
+      turn = 1; isCpuBusy = true;
+      document.getElementById('status-box').textContent = '相手（CPU）が思考中...';
+      
+      setTimeout(() => {
+        const cpuLegal = getStrictLegalMoves(board, hands, 1);
+        if (cpuLegal.length === 0) {
+          if (isKingInCheck(board, 1)) alert('お見事！詰みです。あなたの勝ちです！'); else alert('引き分けです。');
+          isCpuBusy = false; return;
+        }
+
+        const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
+        let selectedMove = null;
+        if (cpuLevel === 1) {
+          const captures = cpuLegal.filter(m => board[m.toR][m.toC] && board[m.toR][m.toC].color === 0);
+          selectedMove = captures.length > 0 && Math.random() < 0.3 ? captures[Math.floor(Math.random() * captures.length)] : cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
+        } else {
+          const depth = cpuLevel === 3 ? 3 : 2;
+          const analysis = analyzePosition(board, hands, 1, depth);
+          if (analysis.bestObj) {
+            selectedMove = cpuLegal.find(m => (m.drop ? (m.drop === analysis.bestObj.drop && m.toR === analysis.bestObj.toR && m.toC === analysis.bestObj.toC) : (m.from && m.from.r === analysis.bestObj.from.r && m.from.c === analysis.bestObj.from.c && m.toR === analysis.bestObj.toR && m.toC === analysis.bestObj.toC)));
+            if (selectedMove) selectedMove.promote = analysis.bestObj.promote;
+          }
+        }
+        if (!selectedMove) selectedMove = cpuLegal[0];
+        selectedMove.promote = selectedMove.promote || (!selectedMove.drop && (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6)));
+
+        usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
+        executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
+        lastMove = { fromR: selectedMove.from ? selectedMove.from.r : null, fromC: selectedMove.from ? selectedMove.from.c : null, toR: selectedMove.toR, toC: selectedMove.toC };
+
+        turn = 0; isCpuBusy = false;
+        if (getStrictLegalMoves(board, hands, 0).length === 0) { alert(isKingInCheck(board, 0) ? '詰みです...あなたの負けです。' : '指し手がありません（引き分け）。'); return; }
+        document.getElementById('status-box').textContent = 'あなたの番です'; updateDisplay();
+      }, 250);
+    }
+
+    function executeMoveOnBoard(b, h, color, from, drop, toR, toC, promote) {
+      if (drop) { b[toR][toC] = { type: drop, color: color }; h[color][drop]--; }
+      else {
+        const piece = b[from.r][from.c], dest = b[toR][toC];
+        if (dest) { const raw = RAW_MAP[dest.type] || dest.type; h[color][raw] = (h[color][raw] || 0) + 1; }
+        b[toR][toC] = { type: promote && PROMOTE_MAP[piece.type] ? PROMOTE_MAP[piece.type] : piece.type, color: color };
+        b[from.r][from.c] = null;
+      }
+    }
+
+    function getStrictLegalMoves(b, h, color) {
+      const candidates = getCandidateMoves(b, h, color), legal = [];
+      for (const m of candidates) {
+        const simB = JSON.parse(JSON.stringify(b)), simH = JSON.parse(JSON.stringify(h));
+        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, false);
+        if (!isKingInCheck(simB, color)) legal.push(m);
+      }
+      return legal;
+    }
+
+    function isKingInCheck(b, color) {
+      let kr = -1, kc = -1;
+      for (let r = 0; r < 9; r++) { for (let c = 0; c < 9; c++) { const p = b[r][c]; if (p && p.color === color && p.type === 'OU') { kr = r; kc = c; break; } } if (kr !== -1) break; }
       if (kr === -1) return true;
       return isSquareAttacked(b, kr, kc, 1 - color);
     }
 
     function isSquareAttacked(b, r, c, byColor) {
-      for (let tr = 0; tr < 9; tr++) {
-        for (let tc = 0; tc < 9; tc++) {
-          const p = b[tr][tc];
-          if (p && p.color === byColor) {
-            const targets = getRawPieceMoves(b, tr, tc);
-            if (targets.some(t => t.r === r && t.c === c)) return true;
-          }
-        }
-      }
+      for (let tr = 0; tr < 9; tr++) { for (let tc = 0; tc < 9; tc++) { const p = b[tr][tc]; if (p && p.color === byColor) { const targets = getRawPieceMoves(b, tr, tc); if (targets.some(t => t.r === r && t.c === c)) return true; } } }
       return false;
     }
 
     function getCandidateMoves(b, h, color) {
       const list = [];
-      for (let r = 0; r < 9; r++) {
-        for (let c = 0; c < 9; c++) {
-          const p = b[r][c];
-          if (p && p.color === color) {
-            const targets = getRawPieceMoves(b, r, c);
-            targets.forEach(t => list.push({ from: { r, c }, toR: t.r, toC: t.c, drop: null }));
-          }
-        }
-      }
+      for (let r = 0; r < 9; r++) { for (let c = 0; c < 9; c++) { const p = b[r][c]; if (p && p.color === color) { getRawPieceMoves(b, r, c).forEach(t => list.push({ from: { r, c }, toR: t.r, toC: t.c, drop: null })); } } }
       HAND_ORDER.forEach(type => {
         if (h[color][type] > 0) {
           for (let r = 0; r < 9; r++) {
             for (let c = 0; c < 9; c++) {
               if (!b[r][c]) {
-                if (type === 'FU') {
-                  let hasFu = false;
-                  for (let tr = 0; tr < 9; tr++) {
-                    const checkP = b[tr][c];
-                    if (checkP && checkP.color === color && checkP.type === 'FU') { hasFu = true; break; }
-                  }
-                  if (hasFu) continue;
-                }
+                if (type === 'FU') { let hasFu = false; for (let tr = 0; tr < 9; tr++) { const checkP = b[tr][c]; if (checkP && checkP.color === color && checkP.type === 'FU') { hasFu = true; break; } } if (hasFu) continue; }
                 if ((type === 'FU' || type === 'KY') && ((color === 0 && r === 0) || (color === 1 && r === 8))) continue;
                 if (type === 'KE' && ((color === 0 && r <= 1) || (color === 1 && r >= 7))) continue;
-
                 list.push({ from: null, toR: r, toC: c, drop: type });
               }
             }
@@ -1212,56 +967,24 @@
     }
 
     function getRawPieceMoves(b, r, c) {
-      const piece = b[r][c];
-      if (!piece) return [];
-      const color = piece.color;
-      const fwd = color === 0 ? -1 : 1;
-      const moves = [];
-
-      function add(nr, nc) {
-        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) return false;
-        const target = b[nr][nc];
-        if (!target) { moves.push({ r: nr, c: nc }); return true; }
-        if (target.color !== color) moves.push({ r: nr, c: nc });
-        return false;
-      }
-
-      function slide(dr, dc) {
-        let nr = r + dr; let nc = c + dc;
-        while (add(nr, nc)) { nr += dr; nc += dc; }
-      }
-
+      const piece = b[r][c]; if (!piece) return [];
+      const color = piece.color, fwd = color === 0 ? -1 : 1, moves = [];
+      function add(nr, nc) { if (nr < 0 || nr > 8 || nc < 0 || nc > 8) return false; const target = b[nr][nc]; if (!target) { moves.push({ r: nr, c: nc }); return true; } if (target.color !== color) moves.push({ r: nr, c: nc }); return false; }
+      function slide(dr, dc) { let nr = r + dr; let nc = c + dc; while (add(nr, nc)) { nr += dr; nc += dc; } }
       const type = piece.type;
       if (type === 'FU') add(r + fwd, c);
       else if (type === 'KY') slide(fwd, 0);
       else if (type === 'KE') { add(r + fwd * 2, c - 1); add(r + fwd * 2, c + 1); }
       else if (type === 'GI') { add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1); add(r - fwd, c - 1); add(r - fwd, c + 1); }
-      else if (type === 'KI' || type === 'TO' || type === 'NY' || type === 'NK' || type === 'NG') {
-        add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1);
-        add(r, c - 1); add(r, c + 1); add(r - fwd, c);
-      }
+      else if (type === 'KI' || type === 'TO' || type === 'NY' || type === 'NK' || type === 'NG') { add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1); add(r, c - 1); add(r, c + 1); add(r - fwd, c); }
       else if (type === 'KA') { slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1); }
       else if (type === 'HI') { slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1); }
-      else if (type === 'UM') {
-        slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1);
-        add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1);
-      }
-      else if (type === 'RY') {
-        slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1);
-        add(r - 1, c - 1); add(r - 1, c + 1); add(r + 1, c - 1); add(r + 1, c + 1);
-      }
-      else if (type === 'OU') {
-        for (let dr = -1; dr <= 1; dr++) {
-          for (let dc = -1; dc <= 1; dc++) {
-            if (dr !== 0 || dc !== 0) add(r + dr, c + dc);
-          }
-        }
-      }
+      else if (type === 'UM') { slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1); add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1); }
+      else if (type === 'RY') { slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1); add(r - 1, c - 1); add(r - 1, c + 1); add(r + 1, c - 1); add(r + 1, c + 1); }
+      else if (type === 'OU') { for (let dr = -1; dr <= 1; dr++) { for (let dc = -1; dc <= 1; dc++) { if (dr !== 0 || dc !== 0) add(r + dr, c + dc); } } }
       return moves;
     }
-
     initGame();
-    initFairyStockfish();
   </script>
 </body>
 </html>
