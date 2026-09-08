@@ -246,6 +246,18 @@
       box-sizing: border-box;
       line-height: 1.3;
     }
+    #guide-card {
+      width: 100%;
+      background: #1f2740;
+      border: 1px solid #33436b;
+      border-left: 4px solid #4dabf7;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-top: 5px;
+      box-sizing: border-box;
+      font-size: 0.76rem;
+      line-height: 1.5;
+    }
     #coach-card {
       width: 100%;
       background: #232738;
@@ -425,6 +437,17 @@
       </div>
     </div>
 
+    <!-- 次の一手ガイド -->
+    <div id="guide-card">
+      <div class="coach-header" style="color:#74c0fc;">
+        <span>🧭 次の一手ガイド</span>
+        <span id="guide-badge" class="coach-badge badge-ok">解析中…</span>
+      </div>
+      <div id="guide-body" class="coach-body">局面を解析しています…</div>
+      <div id="guide-cands" class="coach-pv" style="display:none;"></div>
+      <div id="guide-pv" class="coach-pv" style="display:none;"></div>
+    </div>
+
     <!-- 悪手ブレーキモーダル -->
     <div id="brake-modal" class="modal-overlay">
       <h2 class="modal-title" style="color: #c92a2a;">⚠️ 悪手ブレーキ作動！</h2>
@@ -449,6 +472,9 @@
   </div>
 
   <script id="engine-src">
+
+
+
 
 
 
@@ -1615,9 +1641,12 @@ var SG = (function () {
     }
   };
 })();
-            </script>
+                  </script>
 
   <script>
+
+
+
 
 
 
@@ -1673,6 +1702,9 @@ var SG = (function () {
   var selFrom = -1, selDrop = 0, targets = [];
   var busy = false, lastMove = null, pendingPunish = 0, pendingPromo = null;
   var hintMove = 0;
+  var alwaysHint = true;              /* 最善手ガイドを常時表示するか */
+  var cachedAnalysis = null;          /* {key, res} 同じ局面の解析を使い回す */
+  var pendingAnalysis = null;         /* {key, p}  解析中のPromise */
   var currentEval = 0, gameOver = false;
 
   /* ---------------- Worker ---------------- */
@@ -1885,7 +1917,11 @@ var SG = (function () {
     renderStand('sente-stand', 0);
     renderStand('gote-stand', 1);
     var hb = document.getElementById('hint-btn');
-    if (hb) hb.disabled = busy || gameOver || G.side !== 0;
+    if (hb) {
+      hb.disabled = gameOver;
+      hb.textContent = alwaysHint ? '💡 最善手ガイド：オン（タップで消す）'
+                                  : '💡 最善手ガイド：オフ（タップで表示）';
+    }
     document.getElementById('eval-display').textContent = '評価値: ' + formatScore(currentEval);
   }
 
@@ -2017,8 +2053,7 @@ var SG = (function () {
 
     var preKeys = histKeys.slice();
 
-    engineThink(G.bd, G.hd, 0, preKeys,
-      { time: cfg.analyze, maxDepth: 30, exact: true }).then(function (pre) {
+    getAnalysis(cfg).then(function (pre) {
       /* 同一探索・同一深さの全候補手リストから、指し手の順位と点差を厳密に求める */
       var roots = pre.roots || [];
       var bestScore = roots.length ? roots[0][1] : pre.score;
@@ -2200,6 +2235,7 @@ var SG = (function () {
       busy = false;
       syncEngine();
       status(SG.inCheck(0) ? '⚠️ 王手されています！' : 'あなたの番です');
+      runGuide();
     }, 260);
   }
 
@@ -2248,6 +2284,7 @@ var SG = (function () {
 
   function bigMob(bdArr, hdArr, color) {
     return mobilityCount(movesOf(bdArr, hdArr, color), function (d) {
+      if (d.from < 0) return false;              /* 打つ手は利きに数えない */
       var t = d.pieceType;
       return t === 6 || t === 7 || t === 14 || t === 15;
     });
@@ -2339,322 +2376,828 @@ var SG = (function () {
     return '守りを固められ、こちらは攻めをつなぎにくくなります';
   }
 
-  /* ---------------- 本体 ---------------- */
+  /* =======================================================================
+     解説ルール・レジストリ
+     R(id, 優先度, 条件, 文章) で1件ずつ登録する。優先度が負のものは注意書き。
+     ======================================================================= */
+  var RULES = [];
+  function R(id, pri, test, text) { RULES.push({ id: id, pri: pri, test: test, text: text }); }
+
+  /* ---------------- 追加の局面ヘルパー ---------------- */
+
+  /* 囲いの型（先手座標で定義。後手は 80-sq で反転して判定する） */
+  var CASTLES = [
+    { name: '美濃囲い', sq: [[70, 8], [69, 4], [77, 5], [67, 5]],
+      note: '横からの攻めに強く、上からの攻めに弱いのが特徴です。振り飛車の定番の囲いです。' },
+    { name: '高美濃囲い', sq: [[70, 8], [69, 4], [59, 5], [67, 5]],
+      note: '美濃囲いから金を一段上げた形で、上からの攻めにも耐えやすくなっています。' },
+    { name: '銀冠', sq: [[70, 8], [61, 4], [69, 5], [67, 5]],
+      note: '玉の上に銀が乗った形で、上からの攻めに特に強い囲いです。' },
+    { name: '矢倉囲い', sq: [[64, 8], [65, 5], [57, 5], [56, 4]],
+      note: '上からの攻めに強く、居飛車どうしの戦いで主流になる囲いです。' },
+    { name: '居飛車穴熊', sq: [[72, 8], [64, 4], [65, 5], [74, 5]],
+      note: '玉が隅に入り、王手がかかりにくい非常に堅い囲いです。組むのに手数がかかります。' },
+    { name: '振り飛車穴熊', sq: [[80, 8], [70, 4], [69, 5], [78, 5]],
+      note: '振り飛車側が玉を隅に囲った形で、堅さを頼りに攻め合う戦い方になります。' },
+    { name: '舟囲い', sq: [[66, 8], [65, 5], [67, 5], [69, 4]],
+      note: '手数をかけずに組める軽い囲いですが、堅さは控えめです。' },
+    { name: '中住まい', sq: [[67, 8], [66, 5], [68, 5]],
+      note: '玉を中央に置く形で、左右どちらにも逃げやすい反面、上からの攻めには注意が必要です。' },
+    { name: 'カニ囲い', sq: [[66, 8], [67, 5], [65, 5], [69, 4]],
+      note: '矢倉へ発展する途中の形で、まだ完成形ではありません。' },
+    { name: '金無双', sq: [[69, 8], [68, 5], [67, 5], [78, 4]],
+      note: '相居飛車や相振り飛車で使われる、二枚の金を並べた囲いです。' }
+  ];
+
+  function castleOf(bdArr, color) {
+    var best = null;
+    for (var i = 0; i < CASTLES.length; i++) {
+      var c = CASTLES[i], hit = 0, kingOk = false;
+      for (var j = 0; j < c.sq.length; j++) {
+        var sq = color === 0 ? c.sq[j][0] : (80 - c.sq[j][0]);
+        var want = c.sq[j][1] | (color << 4);
+        var p = bdArr[sq];
+        var ok = (p === want);
+        if (!ok && c.sq[j][1] === 5) {                 /* 金の位置は成銀等でも可 */
+          ok = p && (p >> 4) === color && ((p & 15) === 5 || (p & 15) === 12 || (p & 15) === 9);
+        }
+        if (ok) { hit++; if (c.sq[j][1] === 8) kingOk = true; }
+      }
+      if (!kingOk) continue;
+      var ratio = hit / c.sq.length;
+      if (ratio >= 0.75 && (!best || hit > best.hit)) best = { name: c.name, hit: hit, total: c.sq.length, note: c.note, done: hit === c.sq.length };
+    }
+    return best;
+  }
+
+  /* 戦型（飛車の位置から） */
+  function formationOf(bdArr, color) {
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bdArr[sq];
+      if (!p || (p >> 4) !== color) continue;
+      var t = p & 15;
+      if (t !== 7 && t !== 15) continue;
+      var col = sq % 9;
+      var file = color === 0 ? (9 - col) : (col + 1);
+      if (file === 2) return { name: '居飛車', file: file };
+      if (file === 4) return { name: '四間飛車', file: file };
+      if (file === 3) return { name: '三間飛車', file: file };
+      if (file === 5) return { name: '中飛車', file: file };
+      if (file === 8) return { name: '向かい飛車', file: file };
+      if (file === 7) return { name: '石田流風の陣形', file: file };
+      return { name: file + '筋の飛車', file: file };
+    }
+    return null;
+  }
+
+  /* 玉から3マス以内にいる攻め駒の数 */
+  function attackersNear(bdArr, color, targetKing) {
+    if (targetKing < 0) return 0;
+    var n = 0;
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bdArr[sq];
+      if (!p || (p >> 4) !== color) continue;
+      var t = p & 15;
+      if (t === 8) continue;
+      if (chebSq(sq, targetKing) <= 3) n++;
+    }
+    return n;
+  }
+
+  /* 動かすと自玉に王手がかかる駒（ピン） */
+  function pinnedList(bdArr, hdArr, color) {
+    var k = kingSqOf(bdArr, color);
+    if (k < 0) return [];
+    SG.setPosition(bdArr, hdArr, color, []);
+    if (SG.isAttacked(k, color ^ 1)) return [];
+    var out = [], tmp = new Int8Array(81);
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bdArr[sq];
+      if (!p || (p >> 4) !== color || (p & 15) === 8) continue;
+      tmp.set(bdArr); tmp[sq] = 0;
+      SG.setPosition(tmp, hdArr, color, []);
+      if (SG.isAttacked(k, color ^ 1)) out.push({ sq: sq, type: p & 15 });
+    }
+    return out;
+  }
+
+  function countPromotedInCamp(bdArr, color) {
+    var n = 0;
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bdArr[sq];
+      if (!p || (p >> 4) !== color) continue;
+      var t = p & 15;
+      if (t < 9) continue;
+      var inCamp = color === 0 ? sq < 27 : sq >= 54;
+      if (inCamp) n++;
+    }
+    return n;
+  }
+
+  function handTotal(hdArr, color) {
+    var n = 0;
+    for (var i = 0; i < HAND_ORDER.length; i++) n += hdArr[color * 16 + HAND_ORDER[i]] || 0;
+    return n;
+  }
+
+  function ownPawnOnFile(bdArr, color, col) {
+    var want = 1 | (color << 4);
+    for (var r = 0; r < 9; r++) if (bdArr[r * 9 + col] === want) return true;
+    return false;
+  }
+
+  function pieceOnFile(bdArr, color, col, types) {
+    for (var r = 0; r < 9; r++) {
+      var p = bdArr[r * 9 + col];
+      if (p && (p >> 4) === color && types.indexOf(p & 15) >= 0) return r * 9 + col;
+    }
+    return -1;
+  }
+
+  /* =======================================================================
+     駒ごとの解説テーブル（1駒につき「使い方」「取るとき」「守りに使うとき」）
+     ======================================================================= */
+  var PIECE_LORE = {
+    1: { use: '歩は一マスずつしか進めませんが、盤上で最も数が多く、突く・打つ・叩くと使い道が広い駒です。歩の使い方が上達すると棋力が一段上がります。',
+         cap: '歩で相手の駒を取れるのは最高の駒得です。安い駒で高い駒を取るのが、駒の交換の基本原則になります。',
+         def: '玉の前の歩は「玉頭の歩」と呼ばれ、この歩が無くなると一気に玉が危なくなります。守りの要として大切に扱う駒です。' },
+    2: { use: '香車は前方向にどこまでも進める代わりに、後ろへ戻れません。相手の飛車や玉と同じ筋に置くと、じわじわと圧力をかけられます。',
+         cap: '香車で駒を取る手は、一直線の利きを活かした形です。取った後に取り返されないかを必ず確認してください。',
+         def: '香車は自陣の端で穴熊の壁になったり、飛車の縦利きを止める受けに使われたりします。' },
+    3: { use: '桂馬は駒を飛び越えて前に出られる唯一の駒ですが、後ろに戻れず、二段しか跳べません。跳ねた先が相手の歩の利きに入っていないかが第一の確認点です。',
+         cap: '桂馬で駒を取る手は、飛び越える性質を活かした奇襲的な形になりやすく、相手にとって見落としやすい手です。',
+         def: '守りの桂馬は玉の斜め下を支える形になりますが、跳ねてしまうと守りが薄くなる点に注意が必要です。' },
+    4: { use: '銀は斜め後ろに引けるため、攻めに出しても引き返しがきく便利な駒です。攻めの銀は前に、守りの銀は玉のそばに置くのが基本です。',
+         cap: '銀で駒を取る形は、斜めの利きを活かした攻めの基本です。銀は取られても金と交換なら大きな損にはなりません。',
+         def: '守りの銀は玉の斜め前に置くと、上からの攻めに強い形になります。金と銀の連結が囲いの基本骨格です。' },
+    5: { use: '金は横と斜め前に強く、守りの中心になる駒です。ただし斜め後ろに引けないため、攻めに使うと戻れなくなる点に注意してください。',
+         cap: '金で駒を取る手は堅実ですが、金が前に出すぎると守りが薄くなります。取った後の玉の安全度も合わせて考えてください。',
+         def: '金を玉のそばに置くのは囲いの基本です。金二枚が横に並ぶと、横からの攻めに非常に強い形になります。' },
+    6: { use: '角は盤の斜めを一気に貫く駒です。通り道の歩をどけるだけで働きが劇的に変わるので、角の利きが通っているかを常に意識してください。',
+         cap: '角で駒を取る手は遠くから一気に働きかける形です。取った後、角が相手陣に取り残されないかを確認してください。',
+         def: '守りの角は自陣の斜めをにらみ、相手の打ち込みを防ぐ役割を果たします。' },
+    7: { use: '飛車は縦横に走る最強の駒です。相手の守りが薄い筋に回り、前の歩を交換して利きを通すのが基本的な使い方になります。',
+         cap: '飛車で駒を取る手は破壊力がありますが、飛車は取られると最も損が大きい駒です。取り返されない形かを必ず確かめてください。',
+         def: '自陣の飛車は横に利かせると、相手の打ち込みに対する強力な受けになります。' },
+    8: { use: '玉は将棋で最も大切な駒です。攻めるより先に玉を安全な場所へ動かすことが、勝率を上げる一番の近道になります。',
+         cap: '玉で駒を取る手は、その駒が守られていないことが絶対条件です。取った後に王手がかからないかを必ず確認してください。',
+         def: '玉が囲いの中に収まると、多少の攻めでは倒れなくなります。' },
+    9: { use: 'と金は金と同じ動きで、取られても歩に戻るだけです。相手陣で作ったと金は、じわじわ迫る非常に強力な攻め駒になります。',
+         cap: 'と金で駒を取る手は、安い駒で高い駒を取る理想的な形です。と金が相手陣で暴れ出すと勝勢に近づきます。',
+         def: 'と金を自陣に引きつけて守りに使う手もあり、金が一枚増えたのと同じ効果があります。' },
+    10: { use: '成香は金と同じ動きになり、前にしか進めなかった香車が横にも利くようになります。',
+          cap: '成香で駒を取る形は、金と同じ働きを活かした手になります。',
+          def: '成香は自陣に引きつけて守りの金として使うこともできます。' },
+    11: { use: '成桂は金と同じ動きになり、後ろに戻れなかった桂馬が自由に動けるようになります。',
+          cap: '成桂で駒を取る形は、金と同じ働きを活かした手になります。',
+          def: '成桂を自陣に戻して守り駒にすると、遊んでいた桂馬が生き返ります。' },
+    12: { use: '成銀は金と同じ動きになります。銀のときより横に強くなるぶん、斜め後ろに引けなくなる点は覚えておいてください。',
+          cap: '成銀で駒を取る形は、金と同じ働きを活かした手になります。',
+          def: '成銀は守りの金として使え、囲いの補強に役立ちます。' },
+    14: { use: '馬は角の斜めの利きに玉の動きが加わった駒で、攻守どちらにも使える最強クラスの駒です。「馬は自陣に引け」という格言もあります。',
+          cap: '馬で駒を取る手は、広い利きを活かした強力な一手です。馬は取られにくく、攻めの主軸になります。',
+          def: '自陣に引いた馬は、守りの金銀二枚分の働きをすると言われるほど強力な受け駒になります。' },
+    15: { use: '竜は飛車の縦横の利きに斜めの動きが加わり、一枚で盤面を支配します。終盤では竜が相手玉の近くにいるだけで寄せが早くなります。',
+          cap: '竜で駒を取る手は最も破壊力のある形です。ただし竜を取られると致命傷なので、安全を必ず確かめてください。',
+          def: '自陣に引いた竜は横利きで打ち込みを防ぎ、非常に堅い受けになります。' }
+  };
+
+  var DROP_LORE = {
+    1: '歩を打つ手は将棋の技術が最も出る場面です。垂れ歩・叩きの歩・合わせの歩・底歩と、目的によって打ち方の名前が変わります。',
+    2: '香車を打つ手は、相手の飛車や玉と同じ筋に打つと効果的です。特に相手玉の真下に打つ「田楽刺し」の形は強烈です。',
+    3: '桂馬を打つ手は、相手の駒を飛び越えて急所に届く強襲になります。打った桂馬が取られないかの確認が必要です。',
+    4: '銀を打つ手は、相手の金銀の割れ目に打ち込む「割り打ちの銀」が代表的な手筋です。攻めにも受けにも使えます。',
+    5: '金を打つ手は、攻めなら相手玉の頭に打つ「頭金」、受けなら自陣の傷を埋める形が基本です。',
+    6: '角を打つ手は、相手陣の斜めのラインをにらむ王手飛車取りなどの狙いが生まれます。打ち場所の見極めが重要です。',
+    7: '飛車を打つ手は、相手玉の逃げ道を塞ぐ効果が大きく、終盤の寄せの主役になります。'
+  };
+
+  /* =======================================================================
+     ルール登録
+     ======================================================================= */
+
+  /* --- 1. 終局・詰み関連（8件） --- */
+  R('mate', 200, function (c) { return !c.oppHasReply && c.givesCheck; },
+    function () { return '相手の玉を詰ませる一手です。玉の逃げ道、合駒、王手をかけている駒を取る手のすべてが無くなっており、この手で対局が終わります。'; });
+  R('stalemate', 199, function (c) { return !c.oppHasReply && !c.givesCheck; },
+    function () { return '相手の指す手がすべて無くなります。将棋では指す手が無くなった側の負けになるため、この一手で決着します。'; });
+  R('tsumero', 120, function (c) { return c.tsumero; },
+    function () { return '放っておくと次の一手で詰む「詰めろ」です。相手は受けに回るしかなくなるので、こちらは攻めの手番を握り続けられます。詰めろを連続でかけ続けるのが、寄せの基本的な考え方です。'; });
+  R('tsumeroEscape', 118, function (c) { return c.wasTsumeroOnMe && !c.stillTsumeroOnMe; },
+    function () { return 'こちらの玉には次に詰む形（詰めろ）がかかっていましたが、この手でそれを外しています。詰めろを受けずに攻め合うと一手違いで負けるので、まず受けるのが正着です。'; });
+  R('tsumeroIgnored', -120, function (c) { return c.wasTsumeroOnMe && c.stillTsumeroOnMe; },
+    function () { return 'こちらの玉に詰めろがかかったままです。相手に手番が渡ると詰まされる恐れがあるので、この手で攻め合いが間に合うかどうかを慎重に読んでください。'; });
+  R('mateThreatMade', 115, function (c) { return c.givesCheck && c.oppReplyCount <= 2; },
+    function (c) { return '王手をかけたあと、相手の応手は' + c.oppReplyCount + '通りしかありません。逃げ道が限られている状態は寄せの絶好機です。'; });
+  R('attackersEnough', 72, function (c) { return c.myAttackersNear >= 3 && c.distA <= 4; },
+    function (c) { return '相手玉の近くにこちらの攻め駒が' + c.myAttackersNear + '枚集まりました。「攻めは飛車角銀桂」と言われるように、攻め駒が三枚そろうと寄せが成立しやすくなります。'; });
+  R('defendersMassed', -70, function (c) { return c.oppAttackersNear >= 3; },
+    function (c) { return '自玉の近くに相手の駒が' + c.oppAttackersNear + '枚います。攻め合いになると先に寄せられる危険があるので、受けの手も検討してください。'; });
+
+  /* --- 2. 王手と受け（10件） --- */
+  R('checkDrop', 110, function (c) { return c.givesCheck && c.d.drop; },
+    function (c) { return '持ち駒の' + c.name + 'を打っての王手です。持ち駒を使った王手は相手に予測されにくく、逃げ道を塞ぎながら迫れるのが強みです。'; });
+  R('checkSlider', 110, function (c) { return c.givesCheck && !c.d.drop && (c.moverType === 6 || c.moverType === 7 || c.moverType === 14 || c.moverType === 15); },
+    function (c) { return c.newName + 'の遠い利きを使った王手です。大駒の王手は合駒をされても、その合駒ごと取れる場合が多く、攻めが続きやすい形です。'; });
+  R('checkClose', 109, function (c) { return c.givesCheck && !c.d.drop && c.moverType !== 6 && c.moverType !== 7 && c.moverType !== 14 && c.moverType !== 15; },
+    function (c) { return c.newName + 'を寄せての王手です。相手は玉を逃がすか、合駒をするか、この駒を取るかの三つしか選べません。選択肢を狭めながら手番を握れるのが王手の効果です。'; });
+  R('discoveredCheck', 116, function (c) { return c.givesCheck && c.isDiscovered; },
+    function () { return '駒が動いたことで、後ろにいた大駒の利きが開いてかかる「開き王手」です。動いた駒自身も自由に働けるため、非常に得をしやすい王手です。'; });
+  R('evadeKing', 112, function (c) { return c.wasInCheck && c.moverBefore === 8; },
+    function () { return '王手を玉が逃げてかわす手です。どこへ逃げるかで後の攻められやすさが大きく変わります。逃げ道の広い方、相手の駒から遠い方、そして味方の駒に守られている方を選ぶのが原則です。'; });
+  R('evadeCapture', 112, function (c) { return c.wasInCheck && c.d.capType; },
+    function (c) { return '王手をかけている' + pname(c.d.capType) + 'を取って王手を解消します。受けながら駒を取れるので、三つの受け方の中でも最も得な形です。'; });
+  R('evadeBlock', 111, function (c) { return c.wasInCheck && !c.d.capType && c.moverBefore !== 8; },
+    function (c) { return '玉と相手の駒の間に' + c.name + 'を置いて王手を止める「合駒（あいごま）」です。安い駒で受けられれば損が小さく済み、逆に高い駒を使うと後で狙われます。'; });
+  R('evadeBlockDrop', 111, function (c) { return c.wasInCheck && c.d.drop; },
+    function (c) { return '持ち駒の' + c.name + 'を使った合駒です。盤上の駒を動かすと陣形が崩れる場合、持ち駒で受けるほうが形を保てます。'; });
+  R('checkNoProgress', -60, function (c) { return c.givesCheck && !c.tsumero && c.myAttackersNear <= 1 && c.matA <= c.matB; },
+    function () { return 'ただし攻め駒が足りていない状態での王手は、相手玉を安全な場所へ逃がしてしまう「追う王手」になりがちです。王手は追う手ではなく、詰ますための手として使ってください。'; });
+  R('kingIntoDanger', -100, function (c) { return c.moverBefore === 8 && !c.wasInCheck && c.toR <= 5; },
+    function () { return '玉が前に出る手です。囲いから離れて相手の攻め駒に近づくため、詰まされる危険が大きくなります。よほどの理由がなければ避けたい形です。'; });
+
+  /* --- 3. 駒を取る（10件） --- */
+  R('capFree', 100, function (c) { return c.d.capType && !c.destAttacked; },
+    function (c) { return '相手の' + pname(c.d.capType) + 'を取ります。この駒には相手の利きが無いので、取り返されずにそのまま' + pname(c.d.capType) + '得になります。'; });
+  R('capGood', 99, function (c) { return c.d.capType && c.destAttacked && SG.MAT[c.d.capType] > SG.MAT[c.moverBefore] + 60; },
+    function (c) { return '相手の' + pname(c.d.capType) + 'を取ります。取り返されても' + pname(c.d.capType) + 'と' + c.name + 'の交換になるので、駒の価値でこちらが得をします。'; });
+  R('capEven', 98, function (c) { return c.d.capType && c.destAttacked && Math.abs(SG.MAT[c.d.capType] - SG.MAT[c.moverBefore]) <= 60; },
+    function (c) { return '相手の' + pname(c.d.capType) + 'を取ります。取り返される形ですが駒の価値がほぼ同じなので互角の交換です。交換したあとにどちらの駒がより働くかが判断材料になります。'; });
+  R('capSac', 97, function (c) { return c.d.capType && c.destAttacked && SG.MAT[c.d.capType] < SG.MAT[c.moverBefore] - 60; },
+    function (c) { return '相手の' + pname(c.d.capType) + 'を取りますが、取り返されると駒の価値では損をします。それでもAIが最善と判断しているので、駒得よりも大きな狙いが後ろに隠れています。'; });
+  R('capHand', 68, function (c) { return c.d.capType && SG.MAT[c.d.capType] >= 350; },
+    function (c) { return '取った' + pname(c.d.capType) + 'は持ち駒になり、盤上の好きな場所に打てるようになります。将棋は取った駒を再利用できるため、大駒を手持ちにする価値は非常に大きいです。'; });
+  R('capPawnGood', 67, function (c) { return c.d.capType === 1 && c.myPawnHandB === 0; },
+    function () { return '歩を手に入れられるのも大きな収穫です。持ち歩があると受けにも攻めにも幅が出ます。'; });
+  R('capPromoted', 69, function (c) { return c.d.capType >= 9; },
+    function (c) { return '相手の成り駒を取れました。成り駒を取ると持ち駒としては元の駒に戻るため、盤上での働きを消せるのが大きな効果です。'; });
+  R('recapture', 71, function (c) { return c.d.capType && c.lastWasCapture && c.lastToSq === c.d.to; },
+    function () { return '直前に取られた駒を取り返す手です。取ったら取り返すのは駒の損得を保つ基本で、取り返さないと一方的に駒損になります。'; });
+  R('capBigPiece', 96, function (c) { return c.d.capType === 7 || c.d.capType === 15 || c.d.capType === 6 || c.d.capType === 14; },
+    function (c) { return '相手の大駒（' + pname(c.d.capType) + '）を取れる大きな手です。大駒の損得は勝敗に直結するため、これが成立するなら他の細かい損得は気にする必要がありません。'; });
+  R('capDefended', -55, function (c) { return c.d.capType && c.destAttacked && !c.destDefended; },
+    function (c) { return 'なお、取ったあとの' + sqName(c.d.to) + 'は相手の利きだけがかかっています。取り返された局面まで読んでから決めてください。'; });
+
+  /* --- 4. 成り（8件） --- */
+  R('promPawn', 95, function (c) { return c.d.promote && c.moverBefore === 1; },
+    function () { return '歩を成ってと金にします。と金は金と同じ動きになり、取られても歩に戻るだけです。「と金の遅早」という格言があるほど、じわじわ迫る強力な攻め駒になります。'; });
+  R('promBishop', 95, function (c) { return c.d.promote && c.moverBefore === 6; },
+    function () { return '角を成って馬にします。馬は角の斜めの利きに玉の動きが加わり、攻めにも守りにも使える最強クラスの駒です。取られにくいので長く働き続けます。'; });
+  R('promRook', 95, function (c) { return c.d.promote && c.moverBefore === 7; },
+    function () { return '飛車を成って竜にします。竜は飛車の縦横の利きに斜めの動きが加わり、一枚で広い範囲を支配します。終盤で竜が相手玉に近づくと寄せが一気に早くなります。'; });
+  R('promLance', 94, function (c) { return c.d.promote && c.moverBefore === 2; },
+    function () { return '香車を成って成香にします。前にしか進めなかった香車が金と同じ動きになり、横にも利くようになります。'; });
+  R('promKnight', 94, function (c) { return c.d.promote && c.moverBefore === 3; },
+    function () { return '桂馬を成って成桂にします。後ろに戻れなかった桂馬が金と同じ動きになり、自由度が大きく上がります。'; });
+  R('promSilver', 94, function (c) { return c.d.promote && c.moverBefore === 4; },
+    function () { return '銀を成って成銀にします。横に強くなるかわりに斜め後ろへ引けなくなるので、成るか成らないかは局面によって判断が分かれます。'; });
+  R('promInCamp', 66, function (c) { return c.d.promote && c.enemyCampPromotedA >= 2; },
+    function (c) { return 'これで相手陣の成り駒が' + c.enemyCampPromotedA + '枚になりました。成り駒が増えるほど相手の守りは崩れやすくなります。'; });
+  R('noPromote', 64, function (c) { return !c.d.promote && !c.d.drop && c.couldPromote; },
+    function () { return 'この手は成らずに指す「不成（ならず）」です。成ると動きが変わって困る場合や、次の一手で王手をかけたい場合に選ばれます。'; });
+
+  /* --- 5. 持ち駒を打つ（12件） --- */
+  R('dropNearKing', 92, function (c) { return c.d.drop && c.distA <= 2; },
+    function (c) { return '持ち駒の' + c.name + 'を' + sqName(c.d.to) + 'に打ちます。相手玉のすぐ近くなので、寄せを一気に加速させる一手です。'; });
+  R('dropEnemyCamp', 90, function (c) { return c.d.drop && c.distA > 2 && c.toR <= 2; },
+    function (c) { return '持ち駒の' + c.name + 'を' + sqName(c.d.to) + 'に打ち込みます。敵陣に打つ手は成りを狙えるので、相手は放置できません。'; });
+  R('dropOwnCamp', 88, function (c) { return c.d.drop && c.toR >= 6; },
+    function (c) { return '持ち駒の' + c.name + 'を' + sqName(c.d.to) + 'に打って自陣を補強します。傷になっていた場所に駒を足しておくと、相手の攻めが一手ぶん遅れます。'; });
+  R('dropCenter', 86, function (c) { return c.d.drop && c.toR >= 3 && c.toR <= 5; },
+    function (c) { return '持ち駒の' + c.name + 'を盤の中央付近に打ち、次の攻めと守りの両方の起点にします。'; });
+  R('dropLore', 62, function (c) { return c.d.drop && DROP_LORE[c.d.drop]; },
+    function (c) { return DROP_LORE[c.d.drop]; });
+  R('dropPawnTare', 84, function (c) { return c.d.drop === 1 && c.toR <= 3 && !c.frontPiece; },
+    function () { return '次にと金を作る「垂れ歩」です。すぐには取れず、放置するとと金ができるので、相手にとって受けにくい代表的な好手筋です。'; });
+  R('dropPawnTataki', 84, function (c) { return c.d.drop === 1 && c.frontPiece && c.frontType !== 1; },
+    function (c) { return '相手の' + pname(c.frontType) + 'の頭を叩く「叩きの歩」です。取れば相手の形が乱れ、取らなければこちらが得をする、非常に受けにくい一手です。'; });
+  R('dropPawnAwase', 84, function (c) { return c.d.drop === 1 && c.frontType === 1; },
+    function () { return '相手の歩と向き合う「合わせの歩」です。歩を交換して相手の陣形をほぐし、持ち歩を確保する狙いがあります。'; });
+  R('dropPawnSoko', 84, function (c) { return c.d.drop === 1 && c.toR === 8; },
+    function () { return '一番下の段に打つ「底歩」です。相手の飛車の横利きを止める堅い受けで、「金底の歩、岩より堅し」という格言もあります。'; });
+  R('dropSilverWari', 82, function (c) { return c.d.drop === 4 && c.targets.length >= 2; },
+    function () { return '相手の金や銀の割れ目に打ち込む「割り打ちの銀」の形です。二枚同時に狙えるため、相手は片方しか助けられません。'; });
+  R('dropLanceSkewer', 82, function (c) { return c.d.drop === 2 && c.lanceSkewer; },
+    function () { return '相手玉や大駒と同じ筋に打つ「田楽刺し」の形です。逃げれば後ろの駒が取れるため、非常に厳しい打ち込みになります。'; });
+  R('dropGoldHead', 83, function (c) { return c.d.drop === 5 && c.distA <= 1; },
+    function () { return '相手玉の頭に打つ「頭金」の形です。詰みの基本形なので、金を持っているときは常にこの形を狙えないか考えてください。'; });
+
+  /* --- 6. 駒の安全（10件） --- */
+  R('escapeHang', 105, function (c) { return c.myHangB.length && c.d.from === c.myHangB[0].sq; },
+    function (c) { return 'この' + pname(c.myHangB[0].type) + 'は' + sqName(c.myHangB[0].sq) + 'でタダ取りされる形でした。安全な場所へ動かして、ただ働きの損を防いでいます。'; });
+  R('defendHang', 104, function (c) { return c.myHangB.length && c.d.from !== c.myHangB[0].sq && !c.hangStillThere; },
+    function (c) { return '取られそうだった' + sqName(c.myHangB[0].sq) + 'の' + pname(c.myHangB[0].type) + 'を受けています。利きを足すか、攻めている駒を消すかして、ただ取りの形を解消しました。'; });
+  R('hangIgnored', -110, function (c) { return c.myHangA.length && c.hangStillThere; },
+    function (c) { return '' + sqName(c.myHangA[0].sq) + 'の' + pname(c.myHangA[0].type) + 'は取られる形のままです。相手がここを取ってくる変化を必ず読んでおいてください。'; });
+  R('newHang', -105, function (c) { return c.newHang; },
+    function (c) { return 'この手のあと、' + sqName(c.newHang.sq) + 'の' + pname(c.newHang.type) + 'に相手の利きだけが残ります。次に取られないか気をつけてください。'; });
+  R('destUnsafe', -100, function (c) { return c.destAttacked && !c.destDefended && !c.d.capType; },
+    function (c) { return '移動先の' + sqName(c.d.to) + 'には相手の利きがあり、こちらの利きがありません。取られても良いという読みが入っている可能性が高いので、取られた後の変化まで確かめてください。'; });
+  R('destSafeNote', 58, function (c) { return !c.destAttacked && c.destDefended && !c.d.capType; },
+    function (c) { return '移動先の' + sqName(c.d.to) + 'は味方に守られていて相手の利きがありません。取られる心配のない安全な位置です。'; });
+  R('pinnedNow', -85, function (c) { return c.pinnedA.length > 0; },
+    function (c) { return '' + sqName(c.pinnedA[0].sq) + 'の' + pname(c.pinnedA[0].type) + 'は、動かすと玉に王手がかかる「ピン」された状態です。この駒は当てにできないので、守りの枚数から差し引いて考えてください。'; });
+  R('unpin', 80, function (c) { return c.pinnedB.length > 0 && c.pinnedA.length < c.pinnedB.length; },
+    function () { return '動かすと王手になってしまう「ピン」の状態を解消しています。ピンが外れると、その駒を本来の働きに戻せます。'; });
+  R('oppPinned', 76, function (c) { return c.oppPinnedA.length > 0; },
+    function (c) { return '相手の' + sqName(c.oppPinnedA[0].sq) + 'の' + pname(c.oppPinnedA[0].type) + 'は動かせない状態です。動けない駒は守りとして数えられないので、ここを攻める筋が有力になります。'; });
+  R('oppHangTarget', 78, function (c) { return c.oppHangA.length && !c.d.capType; },
+    function (c) { return '相手の' + sqName(c.oppHangA[0].sq) + 'の' + pname(c.oppHangA[0].type) + 'は誰にも守られていません。今すぐでなくても、ここを攻める筋は常に覚えておきたいところです。'; });
+
+  /* --- 7. 攻めの狙い（12件） --- */
+  R('fork', 100, function (c) { return c.targets.length >= 2; },
+    function (c) { return '移動先から相手の' + pname(c.targets[0].type) + 'と' + pname(c.targets[1].type) + 'の両方をにらむ「両取り」です。相手は片方しか助けられないので、次に駒得が確定します。'; });
+  R('forkBig', 102, function (c) { return c.targets.length >= 2 && SG.MAT[c.targets[0].type] >= 950; },
+    function () { return 'しかも狙っているのは大駒です。大駒の両取りは勝負を決める威力があります。'; });
+  R('singleTarget', 79, function (c) { return c.targets.length === 1 && !c.d.capType; },
+    function (c) { return '次に相手の' + pname(c.targets[0].type) + 'を取ることを狙っています。' + (c.targets[0].undefended ? '相手はこの駒を守るか逃がすかを迫られ、その一手ぶんこちらが得をします。' : '相手が受けを誤れば、そのまま駒得につながります。'); });
+  R('invade', 87, function (c) { return !c.d.drop && c.d.to < 27 && c.d.from >= 27; },
+    function (c) { return c.name + 'が敵陣に入りました。相手陣に足がかりができると成り駒を次々に作れるようになり、攻めが格段に楽になります。'; });
+  R('approachKing', 74, function (c) { return c.distA < c.distB && c.distA <= 3 && !c.givesCheck && !c.d.drop; },
+    function (c) { return '相手玉との距離が' + c.distB + 'マスから' + c.distA + 'マスに縮まりました。攻め駒を玉に近づけていくことが、寄せの第一歩になります。'; });
+  R('rookFileOpen', 75, function (c) { return c.rookFileOpened; },
+    function () { return '飛車の前の歩がなくなり、飛車の利きが相手陣に直接届くようになりました。飛車先が通ると攻めの威力が段違いに上がります。'; });
+  R('crossRook', 81, function (c) { return (c.moverType === 7 || c.moverType === 15) && c.targets.length >= 2; },
+    function () { return '飛車の縦横の利きで二枚を同時に狙う「十字飛車」の形です。飛車の利きが直角に働くと、相手は受けきれません。'; });
+  R('kingHead', 77, function (c) { return c.distA <= 1 && !c.givesCheck && !c.d.drop; },
+    function () { return '相手玉のすぐ隣に駒を進める手です。玉の周辺に駒が近づくと、王手をかけたときに逃げ道が塞がって寄せやすくなります。'; });
+  R('knightHead', 73, function (c) { return c.attacksKnightHead; },
+    function () { return '相手の桂馬の頭を狙う手です。桂馬は前にしか跳べないため、頭を攻められると逃げられません。'; });
+  R('edgeAttack', 70, function (c) { return (c.toC === 0 || c.toC === 8) && c.toR <= 4 && !c.d.drop; },
+    function () { return '端から攻める手です。囲いは横や上には強くても端に弱いことが多く、特に穴熊は端攻めが最も効果的な崩し方になります。'; });
+  R('sealEscape', 76, function (c) { return c.escapeSquaresBefore > c.escapeSquaresAfter && c.escapeSquaresAfter <= 2 && c.distA <= 3; },
+    function (c) { return '相手玉の逃げ道が' + c.escapeSquaresBefore + 'マスから' + c.escapeSquaresAfter + 'マスに減りました。逃げ道を塞いでから王手をかけるのが、寄せの正しい順番です。'; });
+  R('breakCastle', 79, function (c) { return c.castleOppB && !c.castleOppA; },
+    function (c) { return '相手の' + c.castleOppB.name + 'が崩れました。囲いが崩れると玉が急に危なくなるので、攻めを緩めずに続けたいところです。'; });
+
+  /* --- 8. 駒の働き（10件） --- */
+  R('bigMobUp', 70, function (c) { return c.myBigA - c.myBigB >= 3; },
+    function (c) { return 'こちらの飛車・角の利きが' + (c.myBigA - c.myBigB) + 'マス分広がりました。大駒は働く場所を作ってやることで、一枚で盤面全体に影響を及ぼします。'; });
+  R('bigMobBlock', 73, function (c) { return c.oppBigB - c.oppBigA >= 3; },
+    function (c) { return '相手の飛車・角の利きを' + (c.oppBigB - c.oppBigA) + 'マス分止めています。大駒の働きを抑えるのは地味ですが、効果の大きい受けです。'; });
+  R('activatePiece', 69, function (c) { return c.d.from >= 0 && c.mobB <= 2 && c.mobA >= c.mobB + 3; },
+    function (c) { return 'これまで動きの少なかった' + c.name + 'に働き場所を与える手です。遊んでいる駒を活用できると、実質的に一枚駒得したのと同じ効果があります。'; });
+  R('mobDown', -60, function (c) { return c.d.from >= 0 && c.mobA <= 1 && c.mobB >= 4; },
+    function (c) { return 'ただしこの' + c.name + 'は移動先で動ける場所がほとんどありません。働きの悪い駒を作らないよう注意してください。'; });
+  R('bishopDiagonal', 66, function (c) { return (c.moverBefore === 6 || c.moverBefore === 14) && !c.d.capType && !c.d.drop && !c.d.promote; },
+    function () { return '角の利きを通す手です。角は盤の斜め全体を一気に貫くので、通り道の歩を動かすだけで働きが大きく変わります。'; });
+  R('rookSwing', 68, function (c) { return (c.moverBefore === 7 || c.moverBefore === 15) && !c.d.capType && !c.d.drop && c.fromR === c.toR; },
+    function (c) { return '飛車を横に振る（回る）手です。攻める筋を変えることで、相手の守りが薄くなっている場所へ狙いを移します。' + (c.formA ? '陣形は' + c.formA.name + 'の形になります。' : ''); });
+  R('rookRetreat', 64, function (c) { return (c.moverBefore === 7 || c.moverBefore === 15) && c.d.from >= 0 && c.toR > c.fromR && c.fromR <= 3; },
+    function () { return '飛車を自陣に引き上げる手です。敵陣で働きが悪くなった飛車は、いったん引いて横利きで守りに使うと生き返ります。'; });
+  R('horseBack', 71, function (c) { return c.moverBefore === 14 && c.d.from >= 0 && c.toR >= 6; },
+    function () { return '「馬は自陣に引け」という格言どおり、馬を自陣に引きつける手です。自陣の馬は金銀二枚分の守りの働きをすると言われます。'; });
+  R('dragonBack', 70, function (c) { return c.moverBefore === 15 && c.d.from >= 0 && c.toR >= 6; },
+    function () { return '竜を自陣に引きつける手です。竜の横利きは相手の打ち込みを封じるので、受けの駒として非常に優秀です。'; });
+  R('pieceLoreUse', 50, function (c) { return !c.d.capType && !c.d.drop && !c.d.promote && PIECE_LORE[c.moverBefore]; },
+    function (c) { return PIECE_LORE[c.moverBefore].use; });
+  R('pieceLoreCap', 56, function (c) { return c.d.capType && PIECE_LORE[c.moverBefore]; },
+    function (c) { return PIECE_LORE[c.moverBefore].cap; });
+  R('pieceLoreDef', 54, function (c) { return c.nearOwnKingA && PIECE_LORE[c.moverBefore]; },
+    function (c) { return PIECE_LORE[c.moverBefore].def; });
+
+  /* --- 9. 玉と囲い（12件） --- */
+  R('guardUp', 72, function (c) { return c.myGuardA > c.myGuardB; },
+    function (c) { return '玉のまわりの守り駒が' + c.myGuardB + '枚から' + c.myGuardA + '枚に増えました。玉が堅いと多少の攻めでは倒れず、思い切った攻めができるようになります。'; });
+  R('guardDown', -75, function (c) { return c.myGuardA < c.myGuardB && c.moverBefore !== 8; },
+    function (c) { return '玉の守り駒が' + c.myGuardB + '枚から' + c.myGuardA + '枚に減ります。攻めを急ぐ手なので、玉の堅さとのバランスに注意してください。'; });
+  R('castleComplete', 85, function (c) { return c.castleA && c.castleA.done && (!c.castleB || !c.castleB.done); },
+    function (c) { return 'これで' + c.castleA.name + 'が完成しました。' + c.castleA.note; });
+  R('castleProgress', 74, function (c) { return c.castleA && !c.castleA.done; },
+    function (c) { return c.castleA.name + 'を目指した形になっています（' + c.castleA.hit + '/' + c.castleA.total + '）。囲いは完成させてから攻めるのが安全です。'; });
+  R('castleKept', 52, function (c) { return c.castleA && c.castleA.done && c.castleB && c.castleB.done; },
+    function (c) { return '玉は' + c.castleA.name + 'に収まっています。' + c.castleA.note; });
+  R('oppCastle', 51, function (c) { return c.castleOppA; },
+    function (c) { return '相手は' + c.castleOppA.name + 'に囲っています。' + c.castleOppA.note + '崩し方を意識して攻め筋を選んでください。'; });
+  R('kingToCastle', 83, function (c) { return c.moverBefore === 8 && !c.wasInCheck && c.toR >= 7 && (c.toC <= 2 || c.toC >= 6); },
+    function (c) { return '玉を' + sqName(c.d.to) + 'へ移し、囲いに近づける手です。将棋は玉の堅さが勝敗を分けるので、攻め合いになる前に玉を安全な場所へ動かしておくのが基本です。'; });
+  R('kingCenter', -50, function (c) { return c.moverBefore === 8 && !c.wasInCheck && c.toC >= 3 && c.toC <= 5 && c.toR >= 7; },
+    function () { return '玉が中央付近にいる形です。中央は攻められる筋が多いため、左右どちらかに寄せて囲うほうが安全です。'; });
+  R('kingHeadPawnGone', -65, function (c) { return c.myKingHeadPawnGone; },
+    function () { return '自玉の頭の歩がありません。玉頭の歩が無い形は上から攻められると脆いので、早めに補強を考えてください。'; });
+  R('oppKingHeadPawnGone', 67, function (c) { return c.oppKingHeadPawnGone; },
+    function () { return '相手玉の頭の歩がありません。玉頭は囲いの急所なので、ここを攻める筋を覚えておくと寄せが早くなります。'; });
+  R('kingEscapeRoute', 60, function (c) { return c.escapeSquaresMine >= 4; },
+    function () { return '自玉の逃げ道は十分に確保できています。逃げ道が広い玉は詰みにくく、攻め合いでも粘りが利きます。'; });
+  R('kingNoEscape', -70, function (c) { return c.escapeSquaresMine <= 1; },
+    function () { return '自玉の逃げ道がほとんどありません。詰めろをかけられると一気に負けにつながるので、早めに逃げ道を作る手を考えてください。'; });
+
+  /* --- 10. 歩の手筋（10件） --- */
+  R('pawnRookFile', 80, function (c) { return c.moverBefore === 1 && !c.d.drop && !c.d.capType && c.rookOnSameFile; },
+    function () { return '飛車先の歩を伸ばす手です。この歩を交換できれば飛車の利きが相手陣まで直接届き、攻めの起点になります。相手も同じ筋を受けにくるので、序盤の主導権争いの中心になる手です。'; });
+  R('pawnEdge', 58, function (c) { return c.moverBefore === 1 && !c.d.drop && (c.toC === 0 || c.toC === 8); },
+    function () { return '端の歩を突く手です。すぐに効果は見えませんが、終盤に端から玉を攻めるときの入口になり、指す手に困ったときの手待ちとしても使えます。'; });
+  R('pawnKurai', 72, function (c) { return c.moverBefore === 1 && !c.d.drop && c.toR <= 4; },
+    function (c) { return sqName(c.d.to) + 'まで歩を伸ばして「位（くらい）」を取る手です。位を取ると相手の駒が前に出られなくなり、盤上の広さで差がつきます。ただし位は取るだけでなく、支える駒も必要です。'; });
+  R('pawnOpenBishop', 76, function (c) { return c.moverBefore === 1 && !c.d.drop && c.bishopOpened; },
+    function () { return '角道を開ける手です。角の利きが一気に相手陣まで通るので、序盤で最も価値の高い手のひとつです。同時に相手の角も向かってくるため、角交換になる変化も読んでおいてください。'; });
+  R('pawnExchange', 74, function (c) { return c.moverBefore === 1 && c.d.capType === 1; },
+    function () { return '歩を交換する手です。歩の交換は持ち歩を得られるうえ、相手の陣形に隙を作ります。「一歩千金」と言われるほど、持ち歩の価値は高いものです。'; });
+  R('pawnSupport', 55, function (c) { return c.moverBefore === 1 && !c.d.drop && c.toR >= 5 && c.toR <= 6; },
+    function () { return '歩を突いて、後ろの駒が前に出るための道を作る手です。地味ですが、こうした準備の積み重ねが駒組みの土台になります。'; });
+  R('pawnNoPawnHand', 63, function (c) { return c.myPawnHandA === 0 && c.oppPawnHandA > 0; },
+    function () { return 'こちらは持ち歩が無く、相手は歩を持っています。歩切れの側は受けの手段が限られるので、どこかで歩を手に入れる手を考えておきたいところです。'; });
+  R('pawnHandRich', 57, function (c) { return c.myPawnHandA >= 3; },
+    function (c) { return '持ち歩が' + c.myPawnHandA + '枚あります。歩が豊富だと継ぎ歩や垂れ歩といった手筋が使えるので、攻めの選択肢が大きく広がります。'; });
+  R('pawnDouble', -55, function (c) { return c.madeDoubledPawn; },
+    function () { return 'この手で歩が同じ筋に二枚並ぶ形（二歩ではなく重ね歩の形）になります。前の歩が動かないと後ろの歩が働かないので、効率は良くありません。'; });
+  R('pawnAdvanceSupported', 65, function (c) { return c.moverBefore === 1 && !c.d.drop && c.toR <= 5 && c.destDefended; },
+    function () { return 'この歩は味方の駒に支えられているので、突き捨てではなくしっかりした位取りになります。支えのある歩は相手にとって非常に受けにくい存在です。'; });
+
+  /* --- 11. 各駒の一般的な意味（8件） --- */
+  R('knightJump', 66, function (c) { return c.moverBefore === 3 && !c.d.drop; },
+    function () { return '桂馬を跳ねる手です。桂は駒を飛び越えて前に出られる代わりに後ろへ戻れないので、跳ねた先で取られない形かどうかの確認が大切です。「桂の高跳び歩の餌食」という戒めの格言もあります。'; });
+  R('silverAdvance', 62, function (c) { return c.moverBefore === 4 && !c.d.capType && !c.d.drop && c.toR <= 5; },
+    function () { return '銀を攻めに繰り出す手です。銀は斜め後ろに引けるので攻めに使っても引き返しがきき、攻めの主力として最も使いやすい駒です。'; });
+  R('silverDefend', 61, function (c) { return c.moverBefore === 4 && !c.d.capType && !c.d.drop && c.toR >= 6; },
+    function () { return '銀を守りに使う手です。玉の斜め前に銀を置くと上からの攻めに強くなり、金と組み合わせることで囲いの骨格ができます。'; });
+  R('goldMove', 60, function (c) { return c.moverBefore === 5 && !c.d.capType && !c.d.drop; },
+    function () { return '金を動かす手です。金は横と斜め前に強く、玉のそばに置くと守りが一段と堅くなります。逆に攻めに使うと戻りにくい駒でもあるので、動かす前によく考えてください。'; });
+  R('lanceMove', 57, function (c) { return c.moverBefore === 2 && !c.d.drop; },
+    function () { return '香車を進める手です。香は前にしか進めないぶん一直線の力が強く、相手の飛車や玉がいる筋で威力を発揮します。'; });
+  R('bishopMove', 63, function (c) { return (c.moverBefore === 6) && !c.d.capType && !c.d.drop && !c.d.promote; },
+    function () { return '角を動かす手です。角は自分の駒に道を塞がれやすいので、利きが通る位置に置くことが何より大切です。'; });
+  R('rookMove', 63, function (c) { return (c.moverBefore === 7) && !c.d.capType && !c.d.drop && c.fromR !== c.toR; },
+    function () { return '飛車を縦に動かす手です。飛車は前に出すと働きが増える一方、取られる危険も高まります。飛車の安全には常に気を配ってください。'; });
+  R('kingSmallMove', 54, function (c) { return c.moverBefore === 8 && !c.wasInCheck && c.toR >= 7 && c.toC >= 3 && c.toC <= 5; },
+    function () { return '玉の位置を微調整して、守りの形を整える手です。'; });
+
+  /* --- 12. 戦型・局面全体（10件） --- */
+  R('formation', 53, function (c) { return c.formA && (!c.formB || c.formA.name !== c.formB.name); },
+    function (c) { return '陣形は' + c.formA.name + 'になりました。戦型が決まると、囲いや攻め筋の定跡も自然と決まってきます。'; });
+  R('oppFormation', 49, function (c) { return c.formOpp; },
+    function (c) { return '相手の陣形は' + c.formOpp.name + 'です。相手の飛車がいる筋は攻められやすいので、その方面の守りを厚くしておくと安心です。'; });
+  R('materialBig', 47, function (c) { return c.matA >= 400; },
+    function () { return '駒の損得ではこちらがはっきり得をしています。優勢なときは無理に攻めず、駒を交換して局面を単純にしていくと勝ちやすくなります。'; });
+  R('materialSmall', 46, function (c) { return c.matA >= 120 && c.matA < 400; },
+    function () { return '駒の損得ではこちらが少し得をしています。この差を保ったまま進めるのが基本方針になります。'; });
+  R('materialEven', 45, function (c) { return Math.abs(c.matA) < 120; },
+    function () { return '駒の損得はほぼ互角です。こうした局面では、玉を固める・大駒を働かせる・歩を伸ばして位を取る、の三点が指し手の指針になります。'; });
+  R('materialDownSmall', 46, function (c) { return c.matA <= -120 && c.matA > -400; },
+    function () { return '駒の損得ではこちらが少し損をしています。どこかで駒を取り返す筋を探したい局面です。'; });
+  R('materialDownBig', 47, function (c) { return c.matA <= -400; },
+    function () { return '駒の損得ではこちらがはっきり損をしています。取り返す筋を探すか、玉の堅さを頼りに攻め合う方針に切り替えたいところです。'; });
+  R('guardCompare', 48, function () { return true; },
+    function (c) { return '指したあとの玉の堅さは、こちらの守り' + c.myGuardA + '枚に対して相手' + c.oppGuardA + '枚です。' + (c.myGuardA > c.oppGuardA ? '囲いの枚数で上回っているので、攻め合いになればこちらが残りやすい形です。' : c.myGuardA < c.oppGuardA ? '囲いの枚数で劣っているので、無理に攻め合わず玉を固め直す方針も有力です。' : '囲いの枚数は互角なので、先に攻めをつないだ側が有利になりやすい局面です。'); });
+  R('handCompare', 44, function (c) { return Math.abs(c.myHandA - c.oppHandA) >= 2; },
+    function (c) { return '持ち駒の数はこちら' + c.myHandA + '枚、相手' + c.oppHandA + '枚です。' + (c.myHandA > c.oppHandA ? '持ち駒が多いほど攻めの手段が増えるので、この差は大きな武器になります。' : '持ち駒で劣っているので、相手の打ち込みに備えた陣形作りが大切です。'); });
+  R('openingPhase', 43, function (c) { return c.moveNo < 20; },
+    function () { return 'まだ序盤です。序盤は駒を取り合うより、玉を囲い、大駒の利きを通し、歩を伸ばして陣地を広げることを優先してください。'; });
+  R('endgamePhase', 43, function (c) { return c.moveNo >= 60 || c.myHandA + c.oppHandA >= 6; },
+    function () { return '終盤に入っています。終盤は駒の損得より速度が優先されます。相手より一手でも早く寄せられるかを基準に手を選んでください。'; });
+
+  /* =======================================================================
+     文章の組み立て
+     ======================================================================= */
+  function buildContext(m) {
+    var c = {};
+    var d = SG.decode(m);
+    c.d = d;
+    c.moverBefore = d.drop ? d.drop : d.pieceType;
+    c.moverType = d.drop ? d.drop : (d.promote ? (SG.PROM[d.pieceType] || d.pieceType) : d.pieceType);
+    c.name = pname(c.moverBefore);
+    c.newName = pname(c.moverType);
+    c.toR = (d.to / 9) | 0; c.toC = d.to % 9;
+    c.fromR = d.from >= 0 ? ((d.from / 9) | 0) : -1;
+    c.fromC = d.from >= 0 ? (d.from % 9) : -1;
+
+    /* ---- 指す前 ---- */
+    syncEngine();
+    c.wasInCheck = SG.inCheck(0);
+    c.ek = kingSqOf(G.bd, 1);
+    c.mk = kingSqOf(G.bd, 0);
+    c.myHangB = hangingList(G.bd, G.hd, 0);
+    c.myGuardB = guardCount(G.bd, 0);
+    c.myBigB = bigMob(G.bd, G.hd, 0);
+    c.oppBigB = bigMob(G.bd, G.hd, 1);
+    c.mobB = d.from >= 0 ? pieceMob(G.bd, G.hd, 0, d.from) : 0;
+    c.distB = d.from >= 0 ? chebSq(d.from, c.ek) : 9;
+    c.matB = materialDiff(G.bd, G.hd);
+    c.castleB = castleOf(G.bd, 0);
+    c.castleOppB = castleOf(G.bd, 1);
+    c.formB = formationOf(G.bd, 0);
+    c.pinnedB = pinnedList(G.bd, G.hd, 0);
+    c.myPawnHandB = G.hd[1] || 0;
+    c.escapeSquaresBefore = escapeSquares(G.bd, G.hd, 1);
+    c.wasTsumeroOnMe = tsumeroAgainstMe(G.bd, G.hd);
+    c.couldPromote = false;
+    if (!d.drop && SG.PROM[d.pieceType]) {
+      c.couldPromote = (d.to < 27 || d.from < 27);
+    }
+    c.bishopMobB = pieceTypeMob(G.bd, G.hd, 0, [6, 14]);
+
+    /* ---- 指した後 ---- */
+    var after = simulateMove(m);
+    c.after = after;
+    SG.setPosition(after.bd, after.hd, 1, []);
+    c.givesCheck = SG.inCheck(1);
+    c.oppHasReply = SG.hasLegalMove();
+    c.oppReplyCount = c.givesCheck ? countLegal(after.bd, after.hd, 1) : 99;
+    c.destAttacked = SG.isAttacked(d.to, 1);
+    c.destDefended = SG.isAttacked(d.to, 0);
+    c.myHangA = hangingList(after.bd, after.hd, 0);
+    c.oppHangA = hangingList(after.bd, after.hd, 1);
+    c.myGuardA = guardCount(after.bd, 0);
+    c.oppGuardA = guardCount(after.bd, 1);
+    c.myBigA = bigMob(after.bd, after.hd, 0);
+    c.oppBigA = bigMob(after.bd, after.hd, 1);
+    c.mobA = pieceMob(after.bd, after.hd, 0, d.to);
+    c.targets = targetsFrom(after.bd, after.hd, 0, d.to, c.moverType);
+    c.tsumero = (!c.givesCheck && c.oppHasReply) ? isTsumero(after.bd, after.hd) : false;
+    c.stillTsumeroOnMe = c.wasTsumeroOnMe ? tsumeroAgainstMe(after.bd, after.hd) : false;
+    c.matA = materialDiff(after.bd, after.hd);
+    c.castleA = castleOf(after.bd, 0);
+    c.castleOppA = castleOf(after.bd, 1);
+    c.formA = formationOf(after.bd, 0);
+    c.formOpp = formationOf(after.bd, 1);
+    c.pinnedA = pinnedList(after.bd, after.hd, 0);
+    c.oppPinnedA = pinnedList(after.bd, after.hd, 1);
+    c.myPawnHandA = after.hd[1] || 0;
+    c.oppPawnHandA = after.hd[16 + 1] || 0;
+    c.myHandA = handTotal(after.hd, 0);
+    c.oppHandA = handTotal(after.hd, 1);
+    c.enemyCampPromotedA = countPromotedInCamp(after.bd, 0);
+    c.myAttackersNear = attackersNear(after.bd, 0, kingSqOf(after.bd, 1));
+    c.oppAttackersNear = attackersNear(after.bd, 1, kingSqOf(after.bd, 0));
+    c.escapeSquaresAfter = escapeSquares(after.bd, after.hd, 1);
+    c.escapeSquaresMine = escapeSquares(after.bd, after.hd, 0);
+    c.distA = chebSq(d.to, kingSqOf(after.bd, 1));
+    c.nearOwnKingA = chebSq(d.to, kingSqOf(after.bd, 0)) <= 1;
+    c.bishopMobA = pieceTypeMob(after.bd, after.hd, 0, [6, 14]);
+    c.bishopOpened = (c.bishopMobA - c.bishopMobB) >= 3;
+
+    /* 前のマスの駒（歩打ちの分類用） */
+    var fsq = d.to - 9;
+    var fp = (fsq >= 0) ? after.bd[fsq] : 0;
+    c.frontPiece = !!(fp && (fp >> 4) === 1);
+    c.frontType = c.frontPiece ? (fp & 15) : 0;
+
+    /* 飛車の筋 */
+    c.rookOnSameFile = pieceOnFile(after.bd, 0, c.toC, [7, 15]) >= 0;
+    var rookSq = -1;
+    for (var i = 0; i < 81; i++) {
+      var p = after.bd[i];
+      if (p && (p >> 4) === 0 && ((p & 15) === 7 || (p & 15) === 15)) { rookSq = i; break; }
+    }
+    c.rookFileOpened = false;
+    if (rookSq >= 0) {
+      var col = rookSq % 9;
+      c.rookFileOpened = !ownPawnOnFile(after.bd, 0, col) && ownPawnOnFile(G.bd, 0, col);
+    }
+
+    /* 玉頭の歩 */
+    c.myKingHeadPawnGone = headPawnGone(after.bd, 0);
+    c.oppKingHeadPawnGone = headPawnGone(after.bd, 1);
+
+    /* 開き王手か */
+    c.isDiscovered = false;
+    if (c.givesCheck && d.from >= 0) {
+      SG.setPosition(after.bd, after.hd, 1, []);
+      var moverAttacksKing = false;
+      var tmpMoves = movesOf(after.bd, after.hd, 0);
+      for (i = 0; i < tmpMoves.length; i++) {
+        if (tmpMoves[i].from === d.to && tmpMoves[i].capType === 8) { moverAttacksKing = true; break; }
+      }
+      c.isDiscovered = !moverAttacksKing;
+    }
+
+    /* 桂頭攻め */
+    c.attacksKnightHead = false;
+    for (i = 0; i < c.targets.length; i++) if (c.targets[i].type === 3) c.attacksKnightHead = true;
+
+    /* 香の田楽刺し */
+    c.lanceSkewer = false;
+    if (d.drop === 2) {
+      var above = 0;
+      for (var rr = c.toR - 1; rr >= 0; rr--) {
+        var q = after.bd[rr * 9 + c.toC];
+        if (!q) continue;
+        above++;
+        if (above >= 2) { c.lanceSkewer = true; break; }
+      }
+    }
+
+    /* 重ね歩 */
+    c.madeDoubledPawn = false;
+    if (c.moverBefore === 1 && !d.drop) {
+      var cnt = 0;
+      for (rr = 0; rr < 9; rr++) if (after.bd[rr * 9 + c.toC] === 1) cnt++;
+      c.madeDoubledPawn = cnt >= 2;
+    }
+
+    /* 直前の手 */
+    c.lastWasCapture = false; c.lastToSq = -1;
+    if (lastMove) { c.lastToSq = lastMove.toR * 9 + lastMove.toC; c.lastWasCapture = true; }
+
+    /* タダの駒が残ったか */
+    c.hangStillThere = false;
+    if (c.myHangB.length) {
+      for (i = 0; i < c.myHangA.length; i++) if (c.myHangA[i].sq === c.myHangB[0].sq) c.hangStillThere = true;
+    }
+    c.newHang = null;
+    for (i = 0; i < c.myHangA.length; i++) {
+      var found = false;
+      for (var j = 0; j < c.myHangB.length; j++) if (c.myHangB[j].sq === c.myHangA[i].sq) found = true;
+      if (!found && c.myHangA[i].sq !== d.to) { c.newHang = c.myHangA[i]; break; }
+    }
+
+    c.moveNo = usiHistory.length;
+    syncEngine();
+    return c;
+  }
+
+  function countLegal(bdArr, hdArr, color) {
+    SG.setPosition(bdArr, hdArr, color, []);
+    return SG.legalMoves().length;
+  }
+
+  function pieceTypeMob(bdArr, hdArr, color, types) {
+    return mobilityCount(movesOf(bdArr, hdArr, color), function (d) {
+      return d.from >= 0 && types.indexOf(d.pieceType) >= 0;
+    });
+  }
+
+  /* 玉が動ける空きマスの数 */
+  function escapeSquares(bdArr, hdArr, color) {
+    var k = kingSqOf(bdArr, color);
+    if (k < 0) return 0;
+    var moves = movesOf(bdArr, hdArr, color), n = 0, seen = {};
+    for (var i = 0; i < moves.length; i++) {
+      if (moves[i].from !== k) continue;
+      if (seen[moves[i].to]) continue;
+      seen[moves[i].to] = 1; n++;
+    }
+    return n;
+  }
+
+  /* 自分の玉に詰めろがかかっているか（相手が次に一手で詰ませられるか） */
+  function tsumeroAgainstMe(bdArr, hdArr) {
+    SG.setPosition(bdArr, hdArr, 1, []);
+    if (SG.inCheck(0)) return false;
+    return SG.mateIn1() !== 0;
+  }
+
+  function headPawnGone(bdArr, color) {
+    var k = kingSqOf(bdArr, color);
+    if (k < 0) return false;
+    var r = (k / 9) | 0, c = k % 9;
+    var fr = color === 0 ? r - 1 : r + 1;
+    if (fr < 0 || fr > 8) return false;
+    var want = 1 | (color << 4);
+    for (var rr = fr; rr >= 0 && rr <= 8; rr += (color === 0 ? -1 : 1)) {
+      if (bdArr[rr * 9 + c] === want) return false;
+    }
+    return true;
+  }
+
   function describeMove(m, opts) {
     opts = opts || {};
-    var maxFacts = opts.max || 3;
-    var d = SG.decode(m);
-    var moverBefore = d.drop ? d.drop : d.pieceType;
-    var moverType = d.drop ? d.drop : (d.promote ? (SG.PROM[d.pieceType] || d.pieceType) : d.pieceType);
-    var name = pname(moverBefore);
-    var newName = pname(moverType);
-    var toR = (d.to / 9) | 0, toC = d.to % 9;
-    var i, j;
+    var maxFacts = opts.max || 6;
+    var c = buildContext(m);
 
-    /* --- 指す前 --- */
-    syncEngine();
-    var wasInCheck = SG.inCheck(0);
-    var ek = kingSqOf(G.bd, 1);
-    var myHangBefore = hangingList(G.bd, G.hd, 0);
-    var myGuardBefore = guardCount(G.bd, 0);
-    var myBigBefore = bigMob(G.bd, G.hd, 0);
-    var oppBigBefore = bigMob(G.bd, G.hd, 1);
-    var mobBefore = d.from >= 0 ? pieceMob(G.bd, G.hd, 0, d.from) : 0;
-    var distBefore = d.from >= 0 ? chebSq(d.from, ek) : 9;
+    var main = [], warn = [], i;
+    for (i = 0; i < RULES.length; i++) {
+      var r = RULES[i];
+      var ok = false;
+      try { ok = !!r.test(c); } catch (e) { ok = false; }
+      if (!ok) continue;
+      var t;
+      try { t = r.text(c); } catch (e2) { continue; }
+      if (!t) continue;
+      if (r.pri < 0) warn.push({ p: -r.pri, s: t });
+      else main.push({ p: r.pri, s: t });
+    }
+    main.sort(function (a, b) { return b.p - a.p; });
+    warn.sort(function (a, b) { return b.p - a.p; });
 
-    /* --- 指した後 --- */
-    var after = simulateMove(m);
-    SG.setPosition(after.bd, after.hd, 1, []);
-    var givesCheck = SG.inCheck(1);
-    var oppHasReply = SG.hasLegalMove();
-    var destAttacked = SG.isAttacked(d.to, 1);
-    var destDefended = SG.isAttacked(d.to, 0);
-    var myHangAfter = hangingList(after.bd, after.hd, 0);
-    var myGuardAfter = guardCount(after.bd, 0);
-    var myBigAfter = bigMob(after.bd, after.hd, 0);
-    var oppBigAfter = bigMob(after.bd, after.hd, 1);
-    var mobAfter = pieceMob(after.bd, after.hd, 0, d.to);
-    var targets = targetsFrom(after.bd, after.hd, 0, d.to, moverType);
-    var tsumero = (!givesCheck && oppHasReply) ? isTsumero(after.bd, after.hd) : false;
-    var oppGuardAfter = guardCount(after.bd, 1);
-    var oppHangAfter = hangingList(after.bd, after.hd, 1);
-    var matAfter = materialDiff(after.bd, after.hd);
-    var myPawnsInHand = after.hd[1] || 0;
-    var distAfter = chebSq(d.to, ek);
-    syncEngine();
+    /* 終局手はそれだけで十分 */
+    if (main.length && main[0].p >= 199) return main[0].s;
 
-    if (!oppHasReply && givesCheck) {
-      return '相手の玉を詰ませる一手です。玉の逃げ道、合駒、王手をかけている駒を取る手のすべてが無くなっており、ここで対局が終わります。';
+    var picked = [], seen = {};
+    for (i = 0; i < main.length && picked.length < maxFacts; i++) {
+      if (seen[main[i].s]) continue;
+      seen[main[i].s] = 1;
+      picked.push(main[i].s);
     }
-    if (!oppHasReply) {
-      return '相手の指す手がすべて無くなります。将棋では指す手が無くなった側の負けになるため、この一手で決着します。';
-    }
-
-    var F = [], W = [];
-    function add(p, t) { F.push({ p: p, s: t }); }
-
-    /* --- 詰めろ・王手 --- */
-    if (tsumero) {
-      add(97, '放っておくと次の一手で詰む「詰めろ」です。相手は受けに回るしかなくなるので、こちらは攻めの手番を握り続けられます。');
-    }
-    if (givesCheck) {
-      var ck;
-      if (d.drop) ck = '持ち駒の' + name + 'を打っての王手です。';
-      else if (moverType === 6 || moverType === 7 || moverType === 14 || moverType === 15) ck = newName + 'の遠い利きを使った王手です。';
-      else ck = newName + 'を寄せての王手です。';
-      add(95, ck + '相手は玉を逃がすか、合駒をするか、この駒を取るかの三つしか選べません。選択肢を狭めながら手番を握れるのが王手の効果です。');
-    }
-
-    /* --- 王手を受ける手 --- */
-    if (wasInCheck) {
-      if (moverBefore === 8) {
-        add(96, '王手を玉が逃げてかわす手です。どこへ逃げるかで後の攻められやすさが大きく変わるので、逃げ道の広い方、相手の駒から遠い方を選ぶのが原則です。');
-      } else if (d.capType) {
-        add(96, '王手をかけている' + pname(d.capType) + 'を取って王手を解消します。受けながら駒を取れる、最も得な受け方です。');
-      } else {
-        add(96, '玉と相手の駒の間に' + name + 'を置いて王手を止める「合駒（あいごま）」です。安い駒で受けられれば損が小さく済みます。');
-      }
-    }
-
-    /* --- 駒を取る --- */
-    if (d.capType) {
-      var capName = pname(d.capType);
-      var cv = SG.MAT[d.capType], mv = SG.MAT[moverBefore];
-      var t1 = '相手の' + capName + 'を取ります。';
-      if (!destAttacked) t1 += 'この駒には相手の利きが無いので、取り返されずにそのまま' + capName + '得になります。';
-      else if (cv > mv + 60) t1 += '取り返されても' + capName + 'と' + name + 'の交換なので、駒の価値でこちらが得をします。';
-      else if (cv >= mv - 60) t1 += '取り返される形ですが、駒の価値がほぼ同じなので互角の交換です。交換後にどちらの駒が働くかが判断材料になります。';
-      else t1 += '取り返されると駒の価値では損ですが、それ以上に形勢を良くする狙いがある手です。';
-      if (cv >= 350) t1 += '取った駒は持ち駒になり、盤上の好きな場所に打てるようになります。';
-      add(90, t1);
-    }
-
-    /* --- 成る --- */
-    if (d.promote) {
-      var pt;
-      if (moverBefore === 1) pt = 'と金は金と同じ動きになります。取られても歩に戻るだけなので、攻め駒としての価値がとても高い駒です。';
-      else if (moverBefore === 6) pt = '馬は角の斜めの利きに玉の動きが加わり、攻めにも守りにも使える最強クラスの駒になります。';
-      else if (moverBefore === 7) pt = '竜は飛車の縦横の利きに斜めの動きが加わり、一枚で広い範囲を支配します。';
-      else pt = '成ると金と同じ動きになり、横と斜め前に利くぶん、攻めにも守りにも使いやすくなります。';
-      add(82, name + 'を成って' + newName + 'にします。' + pt);
-    }
-
-    /* --- 持ち駒を打つ --- */
-    if (d.drop) {
-      var t2 = '持ち駒の' + name + 'を' + sqName(d.to) + 'に打ちます。';
-      if (distAfter <= 2) t2 += '相手玉のすぐ近くなので、寄せを一気に加速させる一手です。';
-      else if (toR <= 2) t2 += '敵陣に打ち込む手で、成りを狙って相手の陣形を崩しにいきます。';
-      else if (toR >= 6) t2 += '自陣を補強する受けの一手です。傷になっていた場所に駒を足して、相手の攻めを遅らせます。';
-      else t2 += '盤の中央付近に足場を作り、次の攻めと守りの両方の起点にします。';
-      add(78, t2);
-      if (d.drop === 1) {
-        var fsq = d.to - 9, fp = fsq >= 0 ? after.bd[fsq] : 0;
-        if (toR === 8) add(72, '一番下の段に打つ「底歩」で、相手の飛車の横利きを止める堅い受けの形です。');
-        else if (fp && (fp >> 4) === 1 && (fp & 15) === 1) add(72, '相手の歩と向き合う「合わせの歩」です。歩を交換して相手の陣形をほぐし、持ち歩を確保する狙いがあります。');
-        else if (fp && (fp >> 4) === 1) add(72, '相手の駒の頭を叩く「叩きの歩」です。取れば相手の形が乱れ、取らなければこちらが得をする、受けにくい一手です。');
-        else if (toR <= 3) add(72, '次にと金を作る「垂れ歩」です。すぐには取れず、じわじわ効いてくる代表的な好手筋です。');
-      }
-    }
-
-    /* --- 駒を逃がす・守る --- */
-    if (myHangBefore.length) {
-      var h0 = myHangBefore[0];
-      if (d.from === h0.sq) {
-        add(88, 'この' + pname(h0.type) + 'は' + sqName(h0.sq) + 'でタダ取りされる形でした。安全な場所へ動かすことで、ただ働きの損を防いでいます。');
-      } else {
-        var still = false;
-        for (i = 0; i < myHangAfter.length; i++) if (myHangAfter[i].sq === h0.sq) still = true;
-        if (!still) add(86, '取られそうだった' + sqName(h0.sq) + 'の' + pname(h0.type) + 'を受けています。利きを足すか、攻めている駒を消すかして、ただ取りの形を解消しました。');
-      }
-    }
-
-    /* --- 攻めの狙い --- */
-    if (targets.length >= 2) {
-      add(87, '移動先から相手の' + pname(targets[0].type) + 'と' + pname(targets[1].type) + 'の両方をにらむ「両取り」です。相手は片方しか助けられないので、次に駒得が確定します。');
-    } else if (targets.length === 1 && !d.capType) {
-      add(76, '次に相手の' + pname(targets[0].type) + 'を取ることを狙っています。'
-        + (targets[0].undefended ? '相手はこの駒を守るか逃がすかを迫られ、その一手ぶんこちらが得をします。'
-                                 : '相手の受け方を誤らせれば、そのまま駒得につながります。'));
-    }
-    if (!d.drop && d.to < 27 && d.from >= 27) {
-      add(74, name + 'が敵陣に入りました。相手陣に足がかりができると成り駒を次々に作れるようになり、攻めが格段に楽になります。');
-    }
-    if (distAfter < distBefore && distAfter <= 3 && !givesCheck && !d.drop) {
-      add(70, '相手玉との距離が' + distBefore + 'マスから' + distAfter + 'マスに縮まりました。攻め駒を玉に近づけていくことが、寄せの第一歩になります。');
-    }
-
-    /* --- 駒の働き --- */
-    if (oppBigBefore - oppBigAfter >= 3) {
-      add(69, '相手の飛車・角の利きを' + (oppBigBefore - oppBigAfter) + 'マス分止めています。大駒の働きを抑えるのは地味ですが、効果の大きい受けです。');
-    }
-    if (myBigAfter - myBigBefore >= 3) {
-      add(66, 'こちらの飛車・角の利きが' + (myBigAfter - myBigBefore) + 'マス分広がりました。大駒は働く場所を作ってやることで、一枚で盤面全体に影響を及ぼします。');
-    }
-    if (d.from >= 0 && mobBefore <= 2 && mobAfter >= mobBefore + 3) {
-      add(65, 'これまで動きの少なかった' + name + 'に働き場所を与える手です。遊んでいる駒を活用できると、実質的に一枚駒得したのと同じ効果があります。');
-    }
-
-    /* --- 玉の安全度 --- */
-    if (myGuardAfter > myGuardBefore) {
-      add(68, '玉のまわりの守り駒が' + myGuardBefore + '枚から' + myGuardAfter + '枚に増えました。玉が堅いと多少の攻めでは倒れず、思い切った攻めができるようになります。');
-    }
-    if (moverBefore === 8 && !wasInCheck) {
-      var kr = toR, kc = toC;
-      if (kr >= 7 && (kc <= 2 || kc >= 6)) {
-        add(71, '玉を' + sqName(d.to) + 'へ移し、囲いに近づける手です。将棋は玉の堅さが勝敗を分けるので、攻め合いになる前に玉を安全な場所へ動かしておくのが基本です。');
-      } else if (kr <= 5) {
-        add(60, '玉が前に出る手です。囲いから離れると相手の攻め駒に近づくため、よほどの理由がなければ避けたい形です。');
-      } else {
-        add(54, '玉の位置を微調整して、守りの形を整える手です。');
-      }
-    }
-
-    /* --- 駒ごとの一般的な意味 --- */
-    if (moverBefore === 1 && !d.drop && !d.capType && !d.promote) {
-      var rookOnFile = false;
-      for (var rr = 0; rr < 9; rr++) {
-        var rp = after.bd[rr * 9 + toC];
-        if (rp && (rp >> 4) === 0 && ((rp & 15) === 7 || (rp & 15) === 15)) rookOnFile = true;
-      }
-      if (toC === 0 || toC === 8) {
-        add(58, '端の歩を突く手です。すぐに効果は見えませんが、終盤に端から玉を攻めるときの入口になり、指す手に困ったときの手待ちとしても使えます。');
-      } else if (rookOnFile) {
-        add(64, '飛車先の歩を伸ばす手です。この歩を交換できれば飛車の利きが相手陣まで直接届き、攻めの起点になります。相手も同じ筋を受けにくるので、序盤の主導権争いの中心になる手です。');
-      } else if (toR <= 4) {
-        add(62, sqName(d.to) + 'まで歩を伸ばして「位（くらい）」を取る手です。位を取ると相手の駒が前に出られなくなり、盤上の広さで差がつきます。');
-      } else {
-        add(52, '歩を突いて、後ろの駒が前に出るための道を作る手です。地味ですが、駒組みの土台になります。');
-      }
-    }
-    if (moverBefore === 3 && !d.drop && !d.promote) {
-      add(61, '桂馬を跳ねる手です。桂は駒を飛び越えて前に出られる代わりに後ろへ戻れないので、跳ねた先で取られない形かどうかの確認が大切です。');
-    }
-    if (moverBefore === 4 && !d.capType && !d.drop && !d.promote) {
-      add(56, '銀を繰り出す手です。銀は斜め後ろに引けるので攻めに使っても引き返しがきき、攻守どちらにも使いやすい駒です。');
-    }
-    if (moverBefore === 5 && !d.capType && !d.drop && !d.promote) {
-      add(55, '金を寄せる手です。金は横と斜め前に強く、玉のそばに置くと守りが一段と堅くなります。逆に攻めに使うと戻りにくい駒でもあります。');
-    }
-    if ((moverBefore === 7 || moverBefore === 15) && !d.capType && !d.drop
-        && d.from >= 0 && ((d.from / 9) | 0) === toR) {
-      add(59, '飛車を横に振る（回る）手です。攻める筋を変えることで、相手の守りが薄くなっている場所へ狙いを移します。');
-    }
-    if ((moverBefore === 2) && !d.drop && !d.capType && !d.promote) {
-      add(53, '香車を進める手です。香は前にしか進めないぶん一直線の力が強く、相手の飛車や玉のいる筋で威力を発揮します。');
-    }
-    if ((moverBefore === 6 || moverBefore === 14) && !d.capType && !d.drop && !d.promote) {
-      add(57, '角の利きを通す手です。角は盤の斜め全体を一気に貫くので、通り道の歩を動かすだけで一気に働きが変わります。');
-    }
-
-    /* --- 相手の弱点 --- */
-    if (oppHangAfter.length && !d.capType) {
-      add(73, '相手の' + sqName(oppHangAfter[0].sq) + 'の' + pname(oppHangAfter[0].type)
-        + 'は誰にも守られていません。今すぐでなくても、ここを攻める筋は常に覚えておきたいところです。');
-    }
-
-    /* --- 局面全体の見どころ（ほぼ毎回出る解説） --- */
-    add(48, '指したあとの玉の堅さは、こちらの守り' + myGuardAfter + '枚に対して相手' + oppGuardAfter + '枚です。'
-      + (myGuardAfter > oppGuardAfter ? '囲いの枚数で上回っているので、攻め合いになればこちらが残りやすい形です。'
-        : myGuardAfter < oppGuardAfter ? '囲いの枚数で劣っているので、無理に攻め合わず玉を固め直す方針も有力です。'
-        : '囲いの枚数は互角なので、先に攻めをつないだ側が有利になりやすい局面です。'));
-
-    add(46, '駒の損得は'
-      + (matAfter >= 400 ? 'こちらがはっきり駒得しています。無理をせず、駒を交換して単純化していくと勝ちやすくなります。'
-        : matAfter >= 120 ? 'こちらが少し得しています。この差を保ったまま進めるのが方針になります。'
-        : matAfter <= -400 ? 'こちらが駒損しています。取り返す筋を探すか、玉の堅さで勝負する方針に切り替えたいところです。'
-        : matAfter <= -120 ? 'こちらが少し損しています。どこかで駒を取り返す手を探したい局面です。'
-        : 'ほぼ互角です。こうした局面では、玉を固める・大駒を働かせる・歩を伸ばす、の三点が指し手の指針になります。'));
-
-    if (myPawnsInHand === 0 && ((after.hd[16 + 1] || 0) > 0 || usiHistory.length >= 24)) {
-      add(50, '持ち駒に歩がありません。歩は受けにも攻めにも欠かせない駒なので、'
-        + ((after.hd[16 + 1] || 0) > 0 ? '相手が歩を持っているぶん受けで苦しくなります。' : '')
-        + 'どこかで歩を手に入れる手を考えておきたいところです。');
-    }
-
-    if (!F.length) {
-      add(40, name + 'の位置を良くして、次の攻めと守りにつなげる手です。派手さはありませんが、こうした形を整える手の積み重ねが差になります。');
-    }
-
-    /* --- 注意点 --- */
-    if (destAttacked && !destDefended && !d.capType) {
-      W.push('ただし移動先の' + sqName(d.to) + 'には相手の利きがあり、こちらの利きがありません。取られても良いという読みが入っている可能性があるので、取られた後の変化まで確かめてください。');
-    }
-    var newHang = null;
-    for (i = 0; i < myHangAfter.length; i++) {
-      var found = false;
-      for (j = 0; j < myHangBefore.length; j++) if (myHangBefore[j].sq === myHangAfter[i].sq) found = true;
-      if (!found && myHangAfter[i].sq !== d.to) { newHang = myHangAfter[i]; break; }
-    }
-    if (newHang) {
-      W.push('この手のあと、' + sqName(newHang.sq) + 'の' + pname(newHang.type) + 'に相手の利きだけが残ります。次に取られないか気をつけてください。');
-    }
-    if (myGuardAfter < myGuardBefore && moverBefore !== 8) {
-      W.push('玉の守り駒が' + myGuardBefore + '枚から' + myGuardAfter + '枚に減ります。攻めを急ぐ手なので、玉の堅さとのバランスに注意してください。');
-    }
-
-    F.sort(function (a, b) { return b.p - a.p; });
-    var picked = [];
-    for (i = 0; i < F.length && picked.length < maxFacts; i++) picked.push(F[i].s);
     var body = picked.join('');
-    if (W.length) body += W[0];
+    for (i = 0; i < warn.length && i < 2; i++) body += warn[i].s;
 
     if (opts.pv && opts.pv.length > 1) {
       var cont = [], sente = false;
-      for (i = 1; i < opts.pv.length && i < 4; i++) { cont.push(formatJp(opts.pv[i], sente)); sente = !sente; }
+      for (i = 1; i < opts.pv.length && i < 5; i++) { cont.push(formatJp(opts.pv[i], sente)); sente = !sente; }
       if (cont.length) body += 'この後は ' + cont.join(' ') + ' と進むのがAIの読み筋です。';
     }
     return body;
   }
 
-  window.showHint = function () {
-    if (busy || gameOver || G.side !== 0) return;
-    busy = true;
-    hintMove = 0;
-    render();
-    status('最善手を探しています…');
+  function ruleCount() { return RULES.length; }
+
+  function setGuide(badgeText, badgeClass, body, cands, pvArr) {
+    var card = document.getElementById('guide-card');
+    if (card) card.style.display = alwaysHint ? 'block' : 'none';
+    var b = document.getElementById('guide-badge');
+    if (b) { b.className = 'coach-badge ' + (badgeClass || 'badge-ok'); b.textContent = badgeText; }
+    var bodyEl = document.getElementById('guide-body');
+    if (bodyEl) bodyEl.textContent = body;
+    var cEl = document.getElementById('guide-cands');
+    if (cEl) {
+      if (cands && cands.length) { cEl.textContent = '候補手: ' + cands.join('　／　'); cEl.style.display = 'block'; }
+      else cEl.style.display = 'none';
+    }
+    var pEl = document.getElementById('guide-pv');
+    if (pEl) {
+      if (pvArr && pvArr.length) {
+        var parts = [], sente = true;
+        for (var i = 0; i < pvArr.length && i < 8; i++) { parts.push(formatJp(pvArr[i], sente)); sente = !sente; }
+        pEl.textContent = '読み筋: ' + parts.join(' ');
+        pEl.style.display = 'block';
+      } else pEl.style.display = 'none';
+    }
+  }
+
+  function keyStr() { return G.keyLo + ':' + G.keyHi; }
+
+  function curCfg() {
     var level = parseInt(document.getElementById('cpu-level').value, 10) || 3;
-    var cfg = LEVELS[level] || LEVELS[3];
-    engineThink(G.bd, G.hd, 0, histKeys, { time: cfg.analyze, maxDepth: 30, exact: true })
+    return LEVELS[level] || LEVELS[3];
+  }
+
+  /* 同じ局面なら解析結果を使い回す（ガイドと着手判定で二重に読まない） */
+  function getAnalysis(cfg) {
+    var k = keyStr();
+    if (cachedAnalysis && cachedAnalysis.key === k) return Promise.resolve(cachedAnalysis.res);
+    if (pendingAnalysis && pendingAnalysis.key === k) return pendingAnalysis.p;
+    var p = engineThink(G.bd, G.hd, 0, histKeys, { time: cfg.analyze, maxDepth: 30, exact: true })
       .then(function (res) {
-        var roots = res.roots || [];
-        var best = roots.length ? roots[0][0] : res.move;
-        if (!best) { busy = false; render(); status('指せる手がありません。'); return; }
-        var sc = roots.length ? roots[0][1] : res.score;
-
-        /* 定跡がある局面では、定跡手をおすすめとして示す */
-        var bookEntry = OPENING_BOOK[usiHistory.join(' ')];
-        var bookMove = 0;
-        if (bookEntry) {
-          for (var bi = 0; bi < legalList.length; bi++) {
-            if (legalList[bi].usi === bookEntry.move) { bookMove = legalList[bi].raw; break; }
-          }
-        }
-
-        var body;
-        if (bookMove) {
-          hintMove = bookMove;
-          var brank = 0, bsc = null;
-          for (var ri = 0; ri < roots.length; ri++) {
-            if (roots[ri][0] === bookMove) { brank = ri + 1; bsc = roots[ri][1]; break; }
-          }
-          body = '定跡は ' + formatJp(bookMove, true) + ' です。' + bookEntry.comment
-               + describeMove(bookMove, { max: 2 });
-          if (brank && bookMove !== best) {
-            body += 'AIの読みでは第' + brank + '位（' + fmtPts(bsc) + '）で、1位の '
-                  + formatJp(best, true) + '（' + fmtPts(sc) + '）とはほぼ差がありません。';
-          }
-        } else {
-          hintMove = best;
-          body = '最善手は ' + formatJp(best, true) + '（評価値 ' + fmtPts(sc) + '）。'
-               + describeMove(best, { max: 3, pv: res.pv });
-        }
-
-        setCoach('badge-ok', '💡 ヒント', body, res.pv, true, buildCands(roots, 0));
-        setEngineInfo(res, null);
-        busy = false;
-        render();
-        status('青く光っているマスが、AIのすすめる手です。');
+        cachedAnalysis = { key: k, res: res };
+        if (pendingAnalysis && pendingAnalysis.key === k) pendingAnalysis = null;
+        return res;
       });
+    pendingAnalysis = { key: k, p: p };
+    return p;
+  }
+
+  function showGuideResult(res) {
+    var roots = res.roots || [];
+    var best = roots.length ? roots[0][0] : res.move;
+    if (!best) return;
+    var sc = roots.length ? roots[0][1] : res.score;
+
+    var bookEntry = OPENING_BOOK[usiHistory.join(' ')];
+    var bookMove = 0;
+    if (bookEntry) {
+      for (var bi = 0; bi < legalList.length; bi++) {
+        if (legalList[bi].usi === bookEntry.move) { bookMove = legalList[bi].raw; break; }
+      }
+    }
+
+    var body;
+    if (bookMove) {
+      hintMove = bookMove;
+      var brank = 0, bsc = null;
+      for (var ri = 0; ri < roots.length; ri++) {
+        if (roots[ri][0] === bookMove) { brank = ri + 1; bsc = roots[ri][1]; break; }
+      }
+      body = '定跡は ' + formatJp(bookMove, true) + ' です。' + bookEntry.comment
+           + describeMove(bookMove, { max: 5 });
+      if (brank && bookMove !== best) {
+        body += 'なおAIの読みでは第' + brank + '位（' + fmtPts(bsc) + '）で、1位の '
+              + formatJp(best, true) + '（' + fmtPts(sc) + '）とはほぼ差がありません。';
+      }
+    } else {
+      hintMove = best;
+      body = '最善手は ' + formatJp(best, true) + '（評価値 ' + fmtPts(sc) + '）。'
+           + describeMove(best, { max: 6, pv: res.pv });
+    }
+
+    setGuide(formatJp(bookMove || best, true), 'badge-good', body, buildCands(roots, 0), res.pv);
+    render();
+  }
+
+  /* プレイヤーの手番になったら自動で最善手を表示する */
+  function runGuide() {
+    if (!alwaysHint || gameOver || G.side !== 0) return;
+    var k = keyStr();
+    setGuide('解析中…', 'badge-ok', '最善手を調べています…', null, null);
+    getAnalysis(curCfg()).then(function (res) {
+      if (keyStr() !== k) return;             /* 局面が動いていたら破棄 */
+      showGuideResult(res);
+    });
+  }
+
+  window.showHint = function () {
+    if (gameOver) return;
+    alwaysHint = !alwaysHint;
+    if (alwaysHint) {
+      render();
+      runGuide();
+    } else {
+      hintMove = 0;
+      var gc = document.getElementById('guide-card');
+      if (gc) gc.style.display = 'none';
+      render();
+      status('最善手ガイドを消しました。自分の力で読んでみましょう。');
+    }
   };
 
   /* ---------------- モーダル操作 ---------------- */
@@ -2691,6 +3234,7 @@ var SG = (function () {
       render();
     }
     busy = false;
+    runGuide();
   };
 
   window.continueMove = function () {
@@ -2733,9 +3277,12 @@ var SG = (function () {
     document.getElementById('promote-modal').style.display = 'none';
     setCoach('badge-ok', '対局開始', '一手指すごとに、AIの最善手・あなたの手の順位・点差を表示します。', null, true, null);
     setEngineInfo(null, null);
+    cachedAnalysis = null; pendingAnalysis = null;
+    setGuide('解析中…', 'badge-ok', '局面を解析しています…', null, null);
     refreshLegal();
     render();
     status('対局開始。あなたの手番です');
+    runGuide();
   }
 
   window.addEventListener('load', function () {
@@ -2744,6 +3291,6 @@ var SG = (function () {
     newGame();
   });
 })();
-                        </script>
+                              </script>
 </body>
 </html>
