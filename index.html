@@ -209,12 +209,31 @@
     .cell.punish-attacker { background-color: var(--danger-attacker) !important; }
     .cell.punish-target { background-color: var(--danger-target) !important; }
     .cell.in-check { background-color: var(--check-king) !important; animation: blink 0.7s infinite alternate; }
+    .cell.hint-from { box-shadow: inset 0 0 0 3px #1c7ed6; }
+    .cell.hint-to { background-color: #a5d8ff !important; box-shadow: inset 0 0 0 3px #1864ab; }
     @keyframes blink { from { opacity: 0.6; } to { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) {
       .cell.in-check { animation: none; }
     }
     .gote { transform: rotate(180deg); color: #9b111e; }
     .sente { color: #111111; }
+    .hint-row {
+      width: 100%;
+      margin-top: 4px;
+    }
+    #hint-btn {
+      width: 100%;
+      background: #1971c2;
+      color: #fff;
+      border: none;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    #hint-btn:active { background: #1864ab; }
+    #hint-btn:disabled { background: #495057; color: #adb5bd; cursor: default; }
     #status-box {
       margin-top: 4px;
       padding: 5px 8px;
@@ -383,6 +402,10 @@
       <div id="sente-stand" class="stand-list">なし</div>
     </div>
 
+    <div class="hint-row">
+      <button id="hint-btn" onclick="showHint()">💡 次の最善手と、その理由を見る</button>
+    </div>
+
     <div id="status-box">対局開始。あなたの手番です</div>
 
     <!-- AIコーチ解説カード -->
@@ -426,6 +449,9 @@
   </div>
 
   <script id="engine-src">
+
+
+
 
 
 /* =========================================================================
@@ -1421,7 +1447,7 @@ var SG = (function () {
     var bestMove = rmv[0], bestScore = 0, bestDepth = 0, bestPV = [rmv[0]];
     var prevScore = new Int32Array(rn);
     for (i = 0; i < rn; i++) prevScore[i] = -INF + 1;
-    var completeRoots = null, completeDepth = 0;
+    var completeRoots = null, completeDepth = 0, completePV = null;
 
     for (var d = 1; d <= maxDepth; d++) {
       var alpha = -INF, beta = INF;
@@ -1474,6 +1500,7 @@ var SG = (function () {
           completeRoots = [];
           for (i = 0; i < rn; i++) completeRoots.push([rmv[i], rsc[i]]);
           completeDepth = d;
+          completePV = iterPV;
         }
       }
       if (stopped) break;
@@ -1495,7 +1522,8 @@ var SG = (function () {
       score: (exact && completeRoots) ? roots[0][1] : bestScore,
       depth: exact ? (completeDepth || bestDepth) : bestDepth,
       nodes: nodes,
-      ms: Date.now() - startTime, pv: bestPV,
+      ms: Date.now() - startTime,
+      pv: (exact && completeRoots && completePV) ? completePV : bestPV,
       roots: exact ? roots : roots.slice(0, 24),
       exact: exact && !!completeRoots,
       mate: bestScore > MATE - 200
@@ -1587,9 +1615,16 @@ var SG = (function () {
     }
   };
 })();
-      </script>
+            </script>
 
   <script>
+
+
+
+
+
+
+
 
 
 
@@ -1637,6 +1672,7 @@ var SG = (function () {
   var legalList = [];       /* 現在の手番の合法手(decode済み) */
   var selFrom = -1, selDrop = 0, targets = [];
   var busy = false, lastMove = null, pendingPunish = 0, pendingPromo = null;
+  var hintMove = 0;
   var currentEval = 0, gameOver = false;
 
   /* ---------------- Worker ---------------- */
@@ -1834,6 +1870,11 @@ var SG = (function () {
         if (lastMove.fromR === r && lastMove.fromC === c) cell.classList.add('last-move-from');
         else if (lastMove.toR === r && lastMove.toC === c) cell.classList.add('last-move-to');
       }
+      if (hintMove) {
+        var hd2 = SG.decode(hintMove);
+        if (hd2.from === sq) cell.classList.add('hint-from');
+        if (hd2.to === sq) cell.classList.add('hint-to');
+      }
       if (selFrom === sq) cell.classList.add('selected');
       for (var t = 0; t < targets.length; t++) {
         if (targets[t].to === sq) { cell.classList.add('movable'); break; }
@@ -1843,6 +1884,8 @@ var SG = (function () {
     }
     renderStand('sente-stand', 0);
     renderStand('gote-stand', 1);
+    var hb = document.getElementById('hint-btn');
+    if (hb) hb.disabled = busy || gameOver || G.side !== 0;
     document.getElementById('eval-display').textContent = '評価値: ' + formatScore(currentEval);
   }
 
@@ -1957,6 +2000,7 @@ var SG = (function () {
   function playPlayerMove(m) {
     if (busy || gameOver) return;
     busy = true;
+    hintMove = 0;
     selFrom = -1; selDrop = 0; targets = [];
     render();
     status('AIが解析しています…');
@@ -2016,7 +2060,7 @@ var SG = (function () {
     return out;
   }
 
-  function verdictBody(m, info, loss, isBook, bookEntry) {
+  function verdictBody(m, info, loss, isBook, bookEntry, post) {
     var playerJp = formatJp(m, true);
     var bestJp = formatJp(info.best, true);
     var t;
@@ -2030,9 +2074,12 @@ var SG = (function () {
     } else {
       t = '最善手は ' + bestJp + '（' + fmtPts(info.bestScore) + '）でした。';
     }
-    if (isBook && bookEntry) return t + bookEntry.comment;
-    var ex = explain(m, null, false);
-    return ex === '自然な一手です。' ? t : t + ex;
+    if (isBook && bookEntry) t += bookEntry.comment;
+    t += describeMove(m, { max: 2 });
+    if (post && post.move && loss > 60) {
+      t += 'この手には 相手の ' + formatJp(post.move, false) + ' が最善の反撃で、' + describeReply(post.move) + '。';
+    }
+    return t;
   }
 
   function finishPlayerMove(m, pre, post, info, assist, threshold, cfg, bookEntry) {
@@ -2047,6 +2094,9 @@ var SG = (function () {
     var playerJp = formatJp(m, true);
     var bestJp = formatJp(info.best, true);
     var isBook = !!(bookEntry && bookEntry.move === SG.decode(m).usi);
+
+    /* 解説は必ず「指す前の盤面」で組み立てる */
+    var coachBody = verdictBody(m, info, loss, isBook, bookEntry, post);
 
     /* 相手に手が無ければ勝ち */
     var afterState = simulateMove(m);
@@ -2080,8 +2130,7 @@ var SG = (function () {
         '【' + (ASSIST_NAMES[assist] || '') + '基準】最善は ' + bestJp + '（' + fmtPts(info.bestScore)
         + '）。この手には ' + formatJp(post.move, false) + ' の反撃が厳しく、形勢を損ねます。';
       document.getElementById('brake-modal').style.display = 'block';
-      setCoach('badge-bad', '⚠️ 悪手警告', verdictBody(m, info, loss, isBook, bookEntry),
-               pre.pv, true, info.cands);
+      setCoach('badge-bad', '⚠️ 悪手警告', coachBody, pre.pv, true, info.cands);
       status('悪手ブレーキが作動しました');
       return;
     }
@@ -2095,22 +2144,13 @@ var SG = (function () {
     else { cls = 'badge-bad'; badge = '× 大悪手'; }
     if (isBook && info.rank !== 1) { cls = 'badge-good'; badge = '📖 定跡手'; }
 
-    setCoach(cls, badge, verdictBody(m, info, loss, isBook, bookEntry), pre.pv, true, info.cands);
+    setCoach(cls, badge, coachBody, pre.pv, true, info.cands);
 
     snapshot();
     applyMoveToState(m);
     refreshLegal();
     render();
     playCpuMove(post, cfg);
-  }
-
-  function explain(m, bookEntry, isBook) {
-    if (isBook && bookEntry) return bookEntry.comment;
-    var d = SG.decode(m);
-    if (d.capType) return '相手の ' + (KANJI[d.capType] || '駒') + ' を取る手です。';
-    if (d.promote) return '敵陣で ' + (KANJI[d.pieceType] || '駒') + ' を成り、駒の働きを高めました。';
-    if (d.drop) return '持ち駒の ' + KANJI[d.drop] + ' を要所に打ち込みました。';
-    return '自然な一手です。';
   }
 
   function pickCpuMove(post, cfg) {
@@ -2163,6 +2203,460 @@ var SG = (function () {
     }, 260);
   }
 
+  /* =======================================================================
+     指し手の意味を読み解く（コーチ解説の生成）
+     ======================================================================= */
+  function kingSqOf(bdArr, color) {
+    var want = 8 | (color << 4);
+    for (var i = 0; i < 81; i++) if (bdArr[i] === want) return i;
+    return -1;
+  }
+
+  function chebSq(a, b) {
+    if (a < 0 || b < 0) return 9;
+    var dr = Math.abs(((a / 9) | 0) - ((b / 9) | 0));
+    var dc = Math.abs((a % 9) - (b % 9));
+    return dr > dc ? dr : dc;
+  }
+
+  function sqName(sq) { return FILE_KANJI[sq % 9] + RANK_KANJI[(sq / 9) | 0]; }
+
+  /* 文章用の駒名（成り駒は読みやすい呼び方にする） */
+  var TALK_NAME = { 1: '歩', 2: '香車', 3: '桂馬', 4: '銀', 5: '金', 6: '角', 7: '飛車', 8: '玉',
+                    9: 'と金', 10: '成香', 11: '成桂', 12: '成銀', 14: '馬', 15: '竜' };
+  function pname(t) { return TALK_NAME[t] || KANJI[t] || '駒'; }
+
+  function movesOf(bdArr, hdArr, color) {
+    SG.setPosition(bdArr, hdArr, color, []);
+    var raw = SG.legalMoves(), out = [];
+    for (var i = 0; i < raw.length; i++) out.push(SG.decode(raw[i]));
+    return out;
+  }
+
+  /* 成り・不成の重複を除いた「行ける場所の数」 */
+  function mobilityCount(moves, filterFn) {
+    var seen = {}, n = 0;
+    for (var i = 0; i < moves.length; i++) {
+      var d = moves[i];
+      if (filterFn && !filterFn(d)) continue;
+      var k = d.from + '-' + d.to;
+      if (seen[k]) continue;
+      seen[k] = 1; n++;
+    }
+    return n;
+  }
+
+  function bigMob(bdArr, hdArr, color) {
+    return mobilityCount(movesOf(bdArr, hdArr, color), function (d) {
+      var t = d.pieceType;
+      return t === 6 || t === 7 || t === 14 || t === 15;
+    });
+  }
+
+  function pieceMob(bdArr, hdArr, color, sq) {
+    return mobilityCount(movesOf(bdArr, hdArr, color), function (d) { return d.from === sq; });
+  }
+
+  /* タダで取られる形の自駒（価値の高い順） */
+  function hangingList(bdArr, hdArr, color) {
+    SG.setPosition(bdArr, hdArr, color, []);
+    var out = [];
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bdArr[sq];
+      if (!p || (p >> 4) !== color) continue;
+      var t = p & 15;
+      if (t === 8) continue;
+      if (!SG.isAttacked(sq, color ^ 1)) continue;
+      if (SG.isAttacked(sq, color)) continue;
+      out.push({ sq: sq, type: t });
+    }
+    out.sort(function (a, b) { return SG.MAT[b.type] - SG.MAT[a.type]; });
+    return out;
+  }
+
+  function guardCount(bdArr, color) {
+    var k = kingSqOf(bdArr, color);
+    if (k < 0) return 0;
+    var r = (k / 9) | 0, c = k % 9, n = 0;
+    for (var dr = -1; dr <= 1; dr++) {
+      for (var dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue;
+        var nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+        var p = bdArr[nr * 9 + nc];
+        if (p && (p >> 4) === color) n++;
+      }
+    }
+    return n;
+  }
+
+  /* そのマスの駒が次に取りにいける相手の駒 */
+  function targetsFrom(bdArr, hdArr, color, sq, moverType) {
+    var moves = movesOf(bdArr, hdArr, color), out = [];
+    for (var i = 0; i < moves.length; i++) {
+      var d = moves[i];
+      if (d.from !== sq || !d.capType || d.capType === 8) continue;
+      var undef = !SG.isAttacked(d.to, color ^ 1);
+      if (!undef && SG.MAT[d.capType] <= SG.MAT[moverType]) continue;
+      out.push({ type: d.capType, sq: d.to, undefended: undef });
+    }
+    out.sort(function (a, b) { return SG.MAT[b.type] - SG.MAT[a.type]; });
+    return out;
+  }
+
+  function materialDiff(bdArr, hdArr) {
+    var v = 0, i, c, k, t;
+    for (i = 0; i < 81; i++) {
+      var p = bdArr[i];
+      if (!p) continue;
+      t = p & 15;
+      if (t === 8) continue;
+      v += ((p >> 4) === 0 ? 1 : -1) * SG.MAT[t];
+    }
+    for (c = 0; c < 2; c++) {
+      for (k = 0; k < HAND_ORDER.length; k++) {
+        t = HAND_ORDER[k];
+        v += (c === 0 ? 1 : -1) * (hdArr[c * 16 + t] || 0) * SG.MAT[t];
+      }
+    }
+    return v;
+  }
+
+  /* 相手が何もしなければ次に一手で詰むか（詰めろ判定） */
+  function isTsumero(afterBd, afterHd) {
+    SG.setPosition(afterBd, afterHd, 0, []);
+    return SG.mateIn1() !== 0;
+  }
+
+  function describeReply(rm) {
+    var d = SG.decode(rm);
+    if (d.capType && d.promote) return 'こちらの' + pname(d.capType) + 'を取られたうえに成られてしまいます';
+    if (d.capType) return 'こちらの' + pname(d.capType) + 'を取られます';
+    if (d.promote) return '敵陣で成り込まれ、相手の駒の働きが一段と強くなります';
+    if (d.drop) return '持ち駒の' + pname(d.drop) + 'を打ち込まれ、攻めの拠点を作られます';
+    if (d.pieceType === 8) return '玉を安全な場所へ逃がされ、こちらの攻めが続かなくなります';
+    if (d.pieceType === 1) return '歩で受け止められ、攻めの勢いを止められます';
+    return '守りを固められ、こちらは攻めをつなぎにくくなります';
+  }
+
+  /* ---------------- 本体 ---------------- */
+  function describeMove(m, opts) {
+    opts = opts || {};
+    var maxFacts = opts.max || 3;
+    var d = SG.decode(m);
+    var moverBefore = d.drop ? d.drop : d.pieceType;
+    var moverType = d.drop ? d.drop : (d.promote ? (SG.PROM[d.pieceType] || d.pieceType) : d.pieceType);
+    var name = pname(moverBefore);
+    var newName = pname(moverType);
+    var toR = (d.to / 9) | 0, toC = d.to % 9;
+    var i, j;
+
+    /* --- 指す前 --- */
+    syncEngine();
+    var wasInCheck = SG.inCheck(0);
+    var ek = kingSqOf(G.bd, 1);
+    var myHangBefore = hangingList(G.bd, G.hd, 0);
+    var myGuardBefore = guardCount(G.bd, 0);
+    var myBigBefore = bigMob(G.bd, G.hd, 0);
+    var oppBigBefore = bigMob(G.bd, G.hd, 1);
+    var mobBefore = d.from >= 0 ? pieceMob(G.bd, G.hd, 0, d.from) : 0;
+    var distBefore = d.from >= 0 ? chebSq(d.from, ek) : 9;
+
+    /* --- 指した後 --- */
+    var after = simulateMove(m);
+    SG.setPosition(after.bd, after.hd, 1, []);
+    var givesCheck = SG.inCheck(1);
+    var oppHasReply = SG.hasLegalMove();
+    var destAttacked = SG.isAttacked(d.to, 1);
+    var destDefended = SG.isAttacked(d.to, 0);
+    var myHangAfter = hangingList(after.bd, after.hd, 0);
+    var myGuardAfter = guardCount(after.bd, 0);
+    var myBigAfter = bigMob(after.bd, after.hd, 0);
+    var oppBigAfter = bigMob(after.bd, after.hd, 1);
+    var mobAfter = pieceMob(after.bd, after.hd, 0, d.to);
+    var targets = targetsFrom(after.bd, after.hd, 0, d.to, moverType);
+    var tsumero = (!givesCheck && oppHasReply) ? isTsumero(after.bd, after.hd) : false;
+    var oppGuardAfter = guardCount(after.bd, 1);
+    var oppHangAfter = hangingList(after.bd, after.hd, 1);
+    var matAfter = materialDiff(after.bd, after.hd);
+    var myPawnsInHand = after.hd[1] || 0;
+    var distAfter = chebSq(d.to, ek);
+    syncEngine();
+
+    if (!oppHasReply && givesCheck) {
+      return '相手の玉を詰ませる一手です。玉の逃げ道、合駒、王手をかけている駒を取る手のすべてが無くなっており、ここで対局が終わります。';
+    }
+    if (!oppHasReply) {
+      return '相手の指す手がすべて無くなります。将棋では指す手が無くなった側の負けになるため、この一手で決着します。';
+    }
+
+    var F = [], W = [];
+    function add(p, t) { F.push({ p: p, s: t }); }
+
+    /* --- 詰めろ・王手 --- */
+    if (tsumero) {
+      add(97, '放っておくと次の一手で詰む「詰めろ」です。相手は受けに回るしかなくなるので、こちらは攻めの手番を握り続けられます。');
+    }
+    if (givesCheck) {
+      var ck;
+      if (d.drop) ck = '持ち駒の' + name + 'を打っての王手です。';
+      else if (moverType === 6 || moverType === 7 || moverType === 14 || moverType === 15) ck = newName + 'の遠い利きを使った王手です。';
+      else ck = newName + 'を寄せての王手です。';
+      add(95, ck + '相手は玉を逃がすか、合駒をするか、この駒を取るかの三つしか選べません。選択肢を狭めながら手番を握れるのが王手の効果です。');
+    }
+
+    /* --- 王手を受ける手 --- */
+    if (wasInCheck) {
+      if (moverBefore === 8) {
+        add(96, '王手を玉が逃げてかわす手です。どこへ逃げるかで後の攻められやすさが大きく変わるので、逃げ道の広い方、相手の駒から遠い方を選ぶのが原則です。');
+      } else if (d.capType) {
+        add(96, '王手をかけている' + pname(d.capType) + 'を取って王手を解消します。受けながら駒を取れる、最も得な受け方です。');
+      } else {
+        add(96, '玉と相手の駒の間に' + name + 'を置いて王手を止める「合駒（あいごま）」です。安い駒で受けられれば損が小さく済みます。');
+      }
+    }
+
+    /* --- 駒を取る --- */
+    if (d.capType) {
+      var capName = pname(d.capType);
+      var cv = SG.MAT[d.capType], mv = SG.MAT[moverBefore];
+      var t1 = '相手の' + capName + 'を取ります。';
+      if (!destAttacked) t1 += 'この駒には相手の利きが無いので、取り返されずにそのまま' + capName + '得になります。';
+      else if (cv > mv + 60) t1 += '取り返されても' + capName + 'と' + name + 'の交換なので、駒の価値でこちらが得をします。';
+      else if (cv >= mv - 60) t1 += '取り返される形ですが、駒の価値がほぼ同じなので互角の交換です。交換後にどちらの駒が働くかが判断材料になります。';
+      else t1 += '取り返されると駒の価値では損ですが、それ以上に形勢を良くする狙いがある手です。';
+      if (cv >= 350) t1 += '取った駒は持ち駒になり、盤上の好きな場所に打てるようになります。';
+      add(90, t1);
+    }
+
+    /* --- 成る --- */
+    if (d.promote) {
+      var pt;
+      if (moverBefore === 1) pt = 'と金は金と同じ動きになります。取られても歩に戻るだけなので、攻め駒としての価値がとても高い駒です。';
+      else if (moverBefore === 6) pt = '馬は角の斜めの利きに玉の動きが加わり、攻めにも守りにも使える最強クラスの駒になります。';
+      else if (moverBefore === 7) pt = '竜は飛車の縦横の利きに斜めの動きが加わり、一枚で広い範囲を支配します。';
+      else pt = '成ると金と同じ動きになり、横と斜め前に利くぶん、攻めにも守りにも使いやすくなります。';
+      add(82, name + 'を成って' + newName + 'にします。' + pt);
+    }
+
+    /* --- 持ち駒を打つ --- */
+    if (d.drop) {
+      var t2 = '持ち駒の' + name + 'を' + sqName(d.to) + 'に打ちます。';
+      if (distAfter <= 2) t2 += '相手玉のすぐ近くなので、寄せを一気に加速させる一手です。';
+      else if (toR <= 2) t2 += '敵陣に打ち込む手で、成りを狙って相手の陣形を崩しにいきます。';
+      else if (toR >= 6) t2 += '自陣を補強する受けの一手です。傷になっていた場所に駒を足して、相手の攻めを遅らせます。';
+      else t2 += '盤の中央付近に足場を作り、次の攻めと守りの両方の起点にします。';
+      add(78, t2);
+      if (d.drop === 1) {
+        var fsq = d.to - 9, fp = fsq >= 0 ? after.bd[fsq] : 0;
+        if (toR === 8) add(72, '一番下の段に打つ「底歩」で、相手の飛車の横利きを止める堅い受けの形です。');
+        else if (fp && (fp >> 4) === 1 && (fp & 15) === 1) add(72, '相手の歩と向き合う「合わせの歩」です。歩を交換して相手の陣形をほぐし、持ち歩を確保する狙いがあります。');
+        else if (fp && (fp >> 4) === 1) add(72, '相手の駒の頭を叩く「叩きの歩」です。取れば相手の形が乱れ、取らなければこちらが得をする、受けにくい一手です。');
+        else if (toR <= 3) add(72, '次にと金を作る「垂れ歩」です。すぐには取れず、じわじわ効いてくる代表的な好手筋です。');
+      }
+    }
+
+    /* --- 駒を逃がす・守る --- */
+    if (myHangBefore.length) {
+      var h0 = myHangBefore[0];
+      if (d.from === h0.sq) {
+        add(88, 'この' + pname(h0.type) + 'は' + sqName(h0.sq) + 'でタダ取りされる形でした。安全な場所へ動かすことで、ただ働きの損を防いでいます。');
+      } else {
+        var still = false;
+        for (i = 0; i < myHangAfter.length; i++) if (myHangAfter[i].sq === h0.sq) still = true;
+        if (!still) add(86, '取られそうだった' + sqName(h0.sq) + 'の' + pname(h0.type) + 'を受けています。利きを足すか、攻めている駒を消すかして、ただ取りの形を解消しました。');
+      }
+    }
+
+    /* --- 攻めの狙い --- */
+    if (targets.length >= 2) {
+      add(87, '移動先から相手の' + pname(targets[0].type) + 'と' + pname(targets[1].type) + 'の両方をにらむ「両取り」です。相手は片方しか助けられないので、次に駒得が確定します。');
+    } else if (targets.length === 1 && !d.capType) {
+      add(76, '次に相手の' + pname(targets[0].type) + 'を取ることを狙っています。'
+        + (targets[0].undefended ? '相手はこの駒を守るか逃がすかを迫られ、その一手ぶんこちらが得をします。'
+                                 : '相手の受け方を誤らせれば、そのまま駒得につながります。'));
+    }
+    if (!d.drop && d.to < 27 && d.from >= 27) {
+      add(74, name + 'が敵陣に入りました。相手陣に足がかりができると成り駒を次々に作れるようになり、攻めが格段に楽になります。');
+    }
+    if (distAfter < distBefore && distAfter <= 3 && !givesCheck && !d.drop) {
+      add(70, '相手玉との距離が' + distBefore + 'マスから' + distAfter + 'マスに縮まりました。攻め駒を玉に近づけていくことが、寄せの第一歩になります。');
+    }
+
+    /* --- 駒の働き --- */
+    if (oppBigBefore - oppBigAfter >= 3) {
+      add(69, '相手の飛車・角の利きを' + (oppBigBefore - oppBigAfter) + 'マス分止めています。大駒の働きを抑えるのは地味ですが、効果の大きい受けです。');
+    }
+    if (myBigAfter - myBigBefore >= 3) {
+      add(66, 'こちらの飛車・角の利きが' + (myBigAfter - myBigBefore) + 'マス分広がりました。大駒は働く場所を作ってやることで、一枚で盤面全体に影響を及ぼします。');
+    }
+    if (d.from >= 0 && mobBefore <= 2 && mobAfter >= mobBefore + 3) {
+      add(65, 'これまで動きの少なかった' + name + 'に働き場所を与える手です。遊んでいる駒を活用できると、実質的に一枚駒得したのと同じ効果があります。');
+    }
+
+    /* --- 玉の安全度 --- */
+    if (myGuardAfter > myGuardBefore) {
+      add(68, '玉のまわりの守り駒が' + myGuardBefore + '枚から' + myGuardAfter + '枚に増えました。玉が堅いと多少の攻めでは倒れず、思い切った攻めができるようになります。');
+    }
+    if (moverBefore === 8 && !wasInCheck) {
+      var kr = toR, kc = toC;
+      if (kr >= 7 && (kc <= 2 || kc >= 6)) {
+        add(71, '玉を' + sqName(d.to) + 'へ移し、囲いに近づける手です。将棋は玉の堅さが勝敗を分けるので、攻め合いになる前に玉を安全な場所へ動かしておくのが基本です。');
+      } else if (kr <= 5) {
+        add(60, '玉が前に出る手です。囲いから離れると相手の攻め駒に近づくため、よほどの理由がなければ避けたい形です。');
+      } else {
+        add(54, '玉の位置を微調整して、守りの形を整える手です。');
+      }
+    }
+
+    /* --- 駒ごとの一般的な意味 --- */
+    if (moverBefore === 1 && !d.drop && !d.capType && !d.promote) {
+      var rookOnFile = false;
+      for (var rr = 0; rr < 9; rr++) {
+        var rp = after.bd[rr * 9 + toC];
+        if (rp && (rp >> 4) === 0 && ((rp & 15) === 7 || (rp & 15) === 15)) rookOnFile = true;
+      }
+      if (toC === 0 || toC === 8) {
+        add(58, '端の歩を突く手です。すぐに効果は見えませんが、終盤に端から玉を攻めるときの入口になり、指す手に困ったときの手待ちとしても使えます。');
+      } else if (rookOnFile) {
+        add(64, '飛車先の歩を伸ばす手です。この歩を交換できれば飛車の利きが相手陣まで直接届き、攻めの起点になります。相手も同じ筋を受けにくるので、序盤の主導権争いの中心になる手です。');
+      } else if (toR <= 4) {
+        add(62, sqName(d.to) + 'まで歩を伸ばして「位（くらい）」を取る手です。位を取ると相手の駒が前に出られなくなり、盤上の広さで差がつきます。');
+      } else {
+        add(52, '歩を突いて、後ろの駒が前に出るための道を作る手です。地味ですが、駒組みの土台になります。');
+      }
+    }
+    if (moverBefore === 3 && !d.drop && !d.promote) {
+      add(61, '桂馬を跳ねる手です。桂は駒を飛び越えて前に出られる代わりに後ろへ戻れないので、跳ねた先で取られない形かどうかの確認が大切です。');
+    }
+    if (moverBefore === 4 && !d.capType && !d.drop && !d.promote) {
+      add(56, '銀を繰り出す手です。銀は斜め後ろに引けるので攻めに使っても引き返しがきき、攻守どちらにも使いやすい駒です。');
+    }
+    if (moverBefore === 5 && !d.capType && !d.drop && !d.promote) {
+      add(55, '金を寄せる手です。金は横と斜め前に強く、玉のそばに置くと守りが一段と堅くなります。逆に攻めに使うと戻りにくい駒でもあります。');
+    }
+    if ((moverBefore === 7 || moverBefore === 15) && !d.capType && !d.drop
+        && d.from >= 0 && ((d.from / 9) | 0) === toR) {
+      add(59, '飛車を横に振る（回る）手です。攻める筋を変えることで、相手の守りが薄くなっている場所へ狙いを移します。');
+    }
+    if ((moverBefore === 2) && !d.drop && !d.capType && !d.promote) {
+      add(53, '香車を進める手です。香は前にしか進めないぶん一直線の力が強く、相手の飛車や玉のいる筋で威力を発揮します。');
+    }
+    if ((moverBefore === 6 || moverBefore === 14) && !d.capType && !d.drop && !d.promote) {
+      add(57, '角の利きを通す手です。角は盤の斜め全体を一気に貫くので、通り道の歩を動かすだけで一気に働きが変わります。');
+    }
+
+    /* --- 相手の弱点 --- */
+    if (oppHangAfter.length && !d.capType) {
+      add(73, '相手の' + sqName(oppHangAfter[0].sq) + 'の' + pname(oppHangAfter[0].type)
+        + 'は誰にも守られていません。今すぐでなくても、ここを攻める筋は常に覚えておきたいところです。');
+    }
+
+    /* --- 局面全体の見どころ（ほぼ毎回出る解説） --- */
+    add(48, '指したあとの玉の堅さは、こちらの守り' + myGuardAfter + '枚に対して相手' + oppGuardAfter + '枚です。'
+      + (myGuardAfter > oppGuardAfter ? '囲いの枚数で上回っているので、攻め合いになればこちらが残りやすい形です。'
+        : myGuardAfter < oppGuardAfter ? '囲いの枚数で劣っているので、無理に攻め合わず玉を固め直す方針も有力です。'
+        : '囲いの枚数は互角なので、先に攻めをつないだ側が有利になりやすい局面です。'));
+
+    add(46, '駒の損得は'
+      + (matAfter >= 400 ? 'こちらがはっきり駒得しています。無理をせず、駒を交換して単純化していくと勝ちやすくなります。'
+        : matAfter >= 120 ? 'こちらが少し得しています。この差を保ったまま進めるのが方針になります。'
+        : matAfter <= -400 ? 'こちらが駒損しています。取り返す筋を探すか、玉の堅さで勝負する方針に切り替えたいところです。'
+        : matAfter <= -120 ? 'こちらが少し損しています。どこかで駒を取り返す手を探したい局面です。'
+        : 'ほぼ互角です。こうした局面では、玉を固める・大駒を働かせる・歩を伸ばす、の三点が指し手の指針になります。'));
+
+    if (myPawnsInHand === 0 && ((after.hd[16 + 1] || 0) > 0 || usiHistory.length >= 24)) {
+      add(50, '持ち駒に歩がありません。歩は受けにも攻めにも欠かせない駒なので、'
+        + ((after.hd[16 + 1] || 0) > 0 ? '相手が歩を持っているぶん受けで苦しくなります。' : '')
+        + 'どこかで歩を手に入れる手を考えておきたいところです。');
+    }
+
+    if (!F.length) {
+      add(40, name + 'の位置を良くして、次の攻めと守りにつなげる手です。派手さはありませんが、こうした形を整える手の積み重ねが差になります。');
+    }
+
+    /* --- 注意点 --- */
+    if (destAttacked && !destDefended && !d.capType) {
+      W.push('ただし移動先の' + sqName(d.to) + 'には相手の利きがあり、こちらの利きがありません。取られても良いという読みが入っている可能性があるので、取られた後の変化まで確かめてください。');
+    }
+    var newHang = null;
+    for (i = 0; i < myHangAfter.length; i++) {
+      var found = false;
+      for (j = 0; j < myHangBefore.length; j++) if (myHangBefore[j].sq === myHangAfter[i].sq) found = true;
+      if (!found && myHangAfter[i].sq !== d.to) { newHang = myHangAfter[i]; break; }
+    }
+    if (newHang) {
+      W.push('この手のあと、' + sqName(newHang.sq) + 'の' + pname(newHang.type) + 'に相手の利きだけが残ります。次に取られないか気をつけてください。');
+    }
+    if (myGuardAfter < myGuardBefore && moverBefore !== 8) {
+      W.push('玉の守り駒が' + myGuardBefore + '枚から' + myGuardAfter + '枚に減ります。攻めを急ぐ手なので、玉の堅さとのバランスに注意してください。');
+    }
+
+    F.sort(function (a, b) { return b.p - a.p; });
+    var picked = [];
+    for (i = 0; i < F.length && picked.length < maxFacts; i++) picked.push(F[i].s);
+    var body = picked.join('');
+    if (W.length) body += W[0];
+
+    if (opts.pv && opts.pv.length > 1) {
+      var cont = [], sente = false;
+      for (i = 1; i < opts.pv.length && i < 4; i++) { cont.push(formatJp(opts.pv[i], sente)); sente = !sente; }
+      if (cont.length) body += 'この後は ' + cont.join(' ') + ' と進むのがAIの読み筋です。';
+    }
+    return body;
+  }
+
+  window.showHint = function () {
+    if (busy || gameOver || G.side !== 0) return;
+    busy = true;
+    hintMove = 0;
+    render();
+    status('最善手を探しています…');
+    var level = parseInt(document.getElementById('cpu-level').value, 10) || 3;
+    var cfg = LEVELS[level] || LEVELS[3];
+    engineThink(G.bd, G.hd, 0, histKeys, { time: cfg.analyze, maxDepth: 30, exact: true })
+      .then(function (res) {
+        var roots = res.roots || [];
+        var best = roots.length ? roots[0][0] : res.move;
+        if (!best) { busy = false; render(); status('指せる手がありません。'); return; }
+        var sc = roots.length ? roots[0][1] : res.score;
+
+        /* 定跡がある局面では、定跡手をおすすめとして示す */
+        var bookEntry = OPENING_BOOK[usiHistory.join(' ')];
+        var bookMove = 0;
+        if (bookEntry) {
+          for (var bi = 0; bi < legalList.length; bi++) {
+            if (legalList[bi].usi === bookEntry.move) { bookMove = legalList[bi].raw; break; }
+          }
+        }
+
+        var body;
+        if (bookMove) {
+          hintMove = bookMove;
+          var brank = 0, bsc = null;
+          for (var ri = 0; ri < roots.length; ri++) {
+            if (roots[ri][0] === bookMove) { brank = ri + 1; bsc = roots[ri][1]; break; }
+          }
+          body = '定跡は ' + formatJp(bookMove, true) + ' です。' + bookEntry.comment
+               + describeMove(bookMove, { max: 2 });
+          if (brank && bookMove !== best) {
+            body += 'AIの読みでは第' + brank + '位（' + fmtPts(bsc) + '）で、1位の '
+                  + formatJp(best, true) + '（' + fmtPts(sc) + '）とはほぼ差がありません。';
+          }
+        } else {
+          hintMove = best;
+          body = '最善手は ' + formatJp(best, true) + '（評価値 ' + fmtPts(sc) + '）。'
+               + describeMove(best, { max: 3, pv: res.pv });
+        }
+
+        setCoach('badge-ok', '💡 ヒント', body, res.pv, true, buildCands(roots, 0));
+        setEngineInfo(res, null);
+        busy = false;
+        render();
+        status('青く光っているマスが、AIのすすめる手です。');
+      });
+  };
+
   /* ---------------- モーダル操作 ---------------- */
   window.showWhyBlunder = function () {
     document.getElementById('brake-modal').style.display = 'none';
@@ -2191,7 +2685,7 @@ var SG = (function () {
   window.undoMove = function () {
     document.getElementById('brake-modal').style.display = 'none';
     if (restoreSnapshot()) {
-      selFrom = -1; selDrop = 0; targets = [];
+      selFrom = -1; selDrop = 0; targets = []; hintMove = 0;
       pendingPunish = 0;
       refreshLegal();
       render();
@@ -2231,7 +2725,7 @@ var SG = (function () {
     SG.exportState(G);
     histKeys = []; usiHistory = []; undoStack = [];
     selFrom = -1; selDrop = 0; targets = [];
-    busy = false; lastMove = null; pendingPunish = 0; pendingPromo = null;
+    busy = false; lastMove = null; pendingPunish = 0; pendingPromo = null; hintMove = 0;
     currentEval = 0; gameOver = false;
     if (worker) worker.postMessage({ cmd: 'reset' });
     SG.clearTT();
@@ -2250,6 +2744,6 @@ var SG = (function () {
     newGame();
   });
 })();
-          </script>
+                        </script>
 </body>
 </html>
