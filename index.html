@@ -392,7 +392,10 @@
         <span id="coach-badge" class="coach-badge badge-ok">対局開始</span>
       </div>
       <div id="coach-body" class="coach-body">
-        対局を始めると、あなたが指した手とAI最善手の解説がここに表示されます。
+        一手指すごとに、AIの最善手・あなたの手の順位・点差を表示します。
+      </div>
+      <div id="coach-cands" class="coach-pv" style="display: none;">
+        候補手: -
       </div>
       <div id="coach-pv" class="coach-pv" style="display: none;">
         読み筋: -
@@ -423,6 +426,7 @@
   </div>
 
   <script id="engine-src">
+
 
 /* =========================================================================
    将棋ステップコーチ  内蔵思考エンジン "Kirin"
@@ -1387,6 +1391,7 @@ var SG = (function () {
     opts = opts || {};
     var timeMs = opts.time || 2000;
     var maxDepth = opts.maxDepth || 30;
+    var exact = !!opts.exact;      /* 全ルート手を同一窓で読み、正確な点差を出す */
     startTime = Date.now();
     stopTime = startTime + timeMs;
     stopped = false; nodes = 0;
@@ -1394,7 +1399,7 @@ var SG = (function () {
     killers.fill(0);
     for (var hh = 0; hh < history.length; hh++) history[hh] = (history[hh] >> 3);
 
-    var mm = mateIn1();
+    var mm = exact ? 0 : mateIn1();
     if (mm) {
       return { move: mm, score: MATE - 1, depth: 1, nodes: 1, ms: Date.now() - startTime,
                pv: [mm], roots: [[mm, MATE - 1]], mate: true };
@@ -1415,11 +1420,14 @@ var SG = (function () {
 
     var bestMove = rmv[0], bestScore = 0, bestDepth = 0, bestPV = [rmv[0]];
     var prevScore = new Int32Array(rn);
+    for (i = 0; i < rn; i++) prevScore[i] = -INF + 1;
+    var completeRoots = null, completeDepth = 0;
 
     for (var d = 1; d <= maxDepth; d++) {
       var alpha = -INF, beta = INF;
       var iterBest = 0, iterScore = -INF, iterPV = null;
       var done = 0;
+      for (i = 0; i < rn; i++) rsc[i] = -INF;
 
       /* 前回の評価順に並べ替え */
       if (d > 1) {
@@ -1437,8 +1445,11 @@ var SG = (function () {
         var m = rmv[i];
         if (!makeMove(m)) continue;
         var v;
-        if (i === 0) v = -search(d - 1, -beta, -alpha, 1, true);
-        else {
+        if (exact) {
+          v = -search(d - 1, -INF, INF, 1, true);
+        } else if (i === 0) {
+          v = -search(d - 1, -beta, -alpha, 1, true);
+        } else {
           v = -search(d - 1, -alpha - 1, -alpha, 1, true);
           if (v > alpha && !stopped) v = -search(d - 1, -beta, -alpha, 1, true);
         }
@@ -1451,14 +1462,19 @@ var SG = (function () {
           var pv = [m], cl = pvLen[1];
           for (var q = 0; q < cl && q < 24; q++) pv.push(pvTable[1][q]);
           iterPV = pv;
-          if (v > alpha) alpha = v;
+          if (!exact && v > alpha) alpha = v;
         }
       }
 
       if (done > 0 && iterBest) {
         bestMove = iterBest; bestScore = iterScore; bestDepth = d;
         if (iterPV) bestPV = iterPV;
-        for (i = 0; i < rn; i++) prevScore[i] = (rsc[i] === -INF ? -INF + 1 : rsc[i]);
+        for (i = 0; i < rn; i++) if (rsc[i] !== -INF) prevScore[i] = rsc[i];
+        if (!stopped && done === rn) {
+          completeRoots = [];
+          for (i = 0; i < rn; i++) completeRoots.push([rmv[i], rsc[i]]);
+          completeDepth = d;
+        }
       }
       if (stopped) break;
       if (bestScore > MATE - 200 || bestScore < -MATE + 200) break;
@@ -1466,13 +1482,22 @@ var SG = (function () {
     }
 
     var roots = [];
-    for (i = 0; i < rn; i++) if (prevScore[i] > -INF + 1) roots.push([rmv[i], prevScore[i]]);
+    if (exact && completeRoots) {
+      roots = completeRoots;
+    } else {
+      for (i = 0; i < rn; i++) if (prevScore[i] > -INF + 1) roots.push([rmv[i], prevScore[i]]);
+    }
     roots.sort(function (a, b) { return b[1] - a[1]; });
     if (roots.length === 0) roots = [[bestMove, bestScore]];
 
     return {
-      move: bestMove, score: bestScore, depth: bestDepth, nodes: nodes,
-      ms: Date.now() - startTime, pv: bestPV, roots: roots.slice(0, 24),
+      move: (exact && completeRoots) ? roots[0][0] : bestMove,
+      score: (exact && completeRoots) ? roots[0][1] : bestScore,
+      depth: exact ? (completeDepth || bestDepth) : bestDepth,
+      nodes: nodes,
+      ms: Date.now() - startTime, pv: bestPV,
+      roots: exact ? roots : roots.slice(0, 24),
+      exact: exact && !!completeRoots,
       mate: bestScore > MATE - 200
     };
   }
@@ -1562,9 +1587,12 @@ var SG = (function () {
     }
   };
 })();
-    </script>
+      </script>
 
   <script>
+
+
+
 
 /* =========================================================================
    UI レイヤー
@@ -1583,10 +1611,10 @@ var SG = (function () {
 
   /* 相手レベル:探索そのものは常に本格的に行い、指し手の選択で強さを調整する */
   var LEVELS = {
-    1: { time: 500,  margin: 700, blunderRate: 0.35, name: '初級' },
-    2: { time: 900,  margin: 220, blunderRate: 0.08, name: '中級' },
-    3: { time: 2200, margin: 0,   blunderRate: 0,    name: '上級' },
-    4: { time: 4500, margin: 0,   blunderRate: 0,    name: '最強' }
+    1: { time: 500,  analyze: 700,  margin: 700, blunderRate: 0.35, name: '初級' },
+    2: { time: 900,  analyze: 1100, margin: 220, blunderRate: 0.08, name: '中級' },
+    3: { time: 2200, analyze: 1800, margin: 0,   blunderRate: 0,    name: '上級' },
+    4: { time: 4500, analyze: 2800, margin: 0,   blunderRate: 0,    name: '最強' }
   };
 
   var OPENING_BOOK = {
@@ -1666,7 +1694,7 @@ var SG = (function () {
     return new Promise(function (resolve) {
       function runHere() {
         /* 同期モードは画面が固まりすぎないよう思考時間を抑える */
-        var o = { time: Math.min(opts.time, 1500), maxDepth: opts.maxDepth || 30 };
+        var o = { time: Math.min(opts.time, 1800), maxDepth: opts.maxDepth || 30, exact: !!opts.exact };
         setTimeout(function () {
           SG.setPosition(bdArr, hdArr, stm, keys);
           resolve(SG.think(o));
@@ -1763,6 +1791,12 @@ var SG = (function () {
     return (sc > 0 ? '+' : '') + Math.round(sc);
   }
 
+  function fmtPts(v) {
+    if (v > SG.MATE - 1000) return '詰み';
+    if (v < -SG.MATE + 1000) return '被詰み';
+    return (v > 0 ? '+' : '') + Math.round(v);
+  }
+
   /* ---------------- 描画 ---------------- */
   function buildBoardDOM() {
     var el = document.getElementById('board');
@@ -1834,7 +1868,7 @@ var SG = (function () {
 
   function status(txt) { document.getElementById('status-box').textContent = txt; }
 
-  function setCoach(badgeClass, badgeText, body, pvArr, isSentePV) {
+  function setCoach(badgeClass, badgeText, body, pvArr, isSentePV, cands) {
     var b = document.getElementById('coach-badge');
     b.className = 'coach-badge ' + badgeClass;
     b.textContent = badgeText;
@@ -1849,14 +1883,23 @@ var SG = (function () {
       pvEl.textContent = 'AI推奨の読み筋: ' + parts.join(' ');
       pvEl.style.display = 'block';
     } else pvEl.style.display = 'none';
+    var cEl = document.getElementById('coach-cands');
+    if (cEl) {
+      if (cands && cands.length) {
+        cEl.textContent = '候補手: ' + cands.join('　／　');
+        cEl.style.display = 'block';
+      } else cEl.style.display = 'none';
+    }
   }
 
-  function setEngineInfo(r) {
+  function setEngineInfo(pre, post) {
     var el = document.getElementById('engine-info');
     if (!el) return;
-    if (!r) { el.textContent = ''; return; }
-    var nps = r.ms > 0 ? Math.round(r.nodes / r.ms) : 0;
-    el.textContent = '深さ' + r.depth + ' / ' + (r.nodes / 1000).toFixed(0) + 'k局面 / ' + nps + 'kNPS';
+    if (!pre && !post) { el.textContent = ''; return; }
+    var txt = [];
+    if (pre) txt.push('全手精査 深さ' + pre.depth);
+    if (post) txt.push('対局読み 深さ' + post.depth + '（' + (post.nodes / 1000).toFixed(0) + 'k局面）');
+    el.textContent = txt.join(' / ');
   }
 
   /* ---------------- 入力 ---------------- */
@@ -1928,31 +1971,81 @@ var SG = (function () {
     var bookKey = usiHistory.join(' ');
     var bookEntry = OPENING_BOOK[bookKey] || null;
 
-    var preTime = assist === 'off' ? 350 : 800;
     var preKeys = histKeys.slice();
 
-    engineThink(G.bd, G.hd, 0, preKeys, { time: preTime, maxDepth: 30 }).then(function (pre) {
-      var preScore = pre.score;              /* 先手番なので先手視点 */
-      var recommended = pre.move;
+    engineThink(G.bd, G.hd, 0, preKeys,
+      { time: cfg.analyze, maxDepth: 30, exact: true }).then(function (pre) {
+      /* 同一探索・同一深さの全候補手リストから、指し手の順位と点差を厳密に求める */
+      var roots = pre.roots || [];
+      var bestScore = roots.length ? roots[0][1] : pre.score;
+      var rank = 0, playerScore = null;
+      for (var i = 0; i < roots.length; i++) {
+        if (roots[i][0] === m) { rank = i + 1; playerScore = roots[i][1]; break; }
+      }
+      /* 同点の手は同順位として扱う */
+      if (rank > 1 && playerScore === bestScore) rank = 1;
+      var info = {
+        rank: rank, playerScore: playerScore, bestScore: bestScore,
+        best: roots.length ? roots[0][0] : pre.move,
+        loss: playerScore === null ? null : (bestScore - playerScore),
+        cands: buildCands(roots, m)
+      };
 
       var after = simulateMove(m);
       var afterKeys = preKeys.concat([G.keyLo, G.keyHi]);
 
       return engineThink(after.bd, after.hd, 1, afterKeys,
         { time: cfg.time, maxDepth: 30 }).then(function (post) {
-        finishPlayerMove(m, pre, post, preScore, recommended, assist, threshold, cfg, bookEntry);
+        finishPlayerMove(m, pre, post, info, assist, threshold, cfg, bookEntry);
       });
     });
   }
 
-  function finishPlayerMove(m, pre, post, preScore, recommended, assist, threshold, cfg, bookEntry) {
+  function buildCands(roots, played) {
+    var out = [], i, shown = 0;
+    for (i = 0; i < roots.length && shown < 3; i++) {
+      out.push(formatJp(roots[i][0], true) + ' ' + fmtPts(roots[i][1]));
+      shown++;
+    }
+    for (i = 3; i < roots.length; i++) {
+      if (roots[i][0] === played) {
+        out.push('…第' + (i + 1) + '位 ' + formatJp(roots[i][0], true) + ' ' + fmtPts(roots[i][1]));
+        break;
+      }
+    }
+    return out;
+  }
+
+  function verdictBody(m, info, loss, isBook, bookEntry) {
+    var playerJp = formatJp(m, true);
+    var bestJp = formatJp(info.best, true);
+    var t;
+    if (info.rank === 1) {
+      t = playerJp + ' が最善手です（評価値 ' + fmtPts(info.bestScore) + '）。';
+    } else if (info.rank > 1) {
+      t = '最善手は ' + bestJp + '（' + fmtPts(info.bestScore) + '）。'
+        + playerJp + ' は第' + info.rank + '位、'
+        + (loss > 0 ? '−' + Math.round(loss) + '点' : '同点')
+        + (loss > 0 && loss <= 25 ? 'で実質互角です。' : 'です。');
+    } else {
+      t = '最善手は ' + bestJp + '（' + fmtPts(info.bestScore) + '）でした。';
+    }
+    if (isBook && bookEntry) return t + bookEntry.comment;
+    var ex = explain(m, null, false);
+    return ex === '自然な一手です。' ? t : t + ex;
+  }
+
+  function finishPlayerMove(m, pre, post, info, assist, threshold, cfg, bookEntry) {
     var postScore = -post.score;             /* 後手番の評価を先手視点へ */
-    var loss = preScore - postScore;
     currentEval = postScore;
-    setEngineInfo(post);
+    setEngineInfo(pre, post);
+
+    var loss = info.loss;
+    if (loss === null || loss === undefined) loss = info.bestScore - postScore;
+    if (loss < 0) loss = 0;
 
     var playerJp = formatJp(m, true);
-    var bestJp = formatJp(recommended, true);
+    var bestJp = formatJp(info.best, true);
     var isBook = !!(bookEntry && bookEntry.move === SG.decode(m).usi);
 
     /* 相手に手が無ければ勝ち */
@@ -1968,7 +2061,7 @@ var SG = (function () {
       refreshLegal();
       render();
       gameOver = true; busy = false;
-      setCoach('badge-good', '🏆 勝利！', playerJp + ' で詰みました。お見事です。', null);
+      setCoach('badge-good', '🏆 勝利！', playerJp + ' で詰みました。お見事です。', null, true, null);
       status(goteInCheck ? '🏆 詰みです。あなたの勝ちです！' : '相手に指す手がありません。あなたの勝ちです！');
       return;
     }
@@ -1981,25 +2074,28 @@ var SG = (function () {
       applyMoveToState(m);
       refreshLegal();
       render();
-      document.getElementById('brake-score-badge').textContent = '評価値落差 −' + Math.round(Math.min(loss, 99999)) + '点';
+      document.getElementById('brake-score-badge').textContent =
+        '最善手との差 −' + Math.round(Math.min(loss, 99999)) + '点';
       document.getElementById('brake-msg').textContent =
-        '【' + (ASSIST_NAMES[assist] || '') + '基準】この手だと ' + formatJp(post.move, false) + ' の反撃が厳しく、形勢を損ねます。';
+        '【' + (ASSIST_NAMES[assist] || '') + '基準】最善は ' + bestJp + '（' + fmtPts(info.bestScore)
+        + '）。この手には ' + formatJp(post.move, false) + ' の反撃が厳しく、形勢を損ねます。';
       document.getElementById('brake-modal').style.display = 'block';
-      setCoach('badge-bad', '⚠️ 悪手警告', 'AIの最善手は ' + bestJp + ' でした。' + explain(m, bookEntry, isBook),
-               pre.pv, true);
+      setCoach('badge-bad', '⚠️ 悪手警告', verdictBody(m, info, loss, isBook, bookEntry),
+               pre.pv, true, info.cands);
       status('悪手ブレーキが作動しました');
       return;
     }
 
-    if (isBook) {
-      setCoach('badge-good', '🌟 定跡手！', playerJp + ' は定跡です。' + (bookEntry ? bookEntry.comment : ''), pre.pv, true);
-    } else if ((recommended && m === recommended) || loss <= 35) {
-      setCoach('badge-good', '🌟 好手！', playerJp + ' はAI第一推奨クラスの一手です。' + explain(m, bookEntry, false), pre.pv, true);
-    } else if (loss <= 130) {
-      setCoach('badge-ok', '👍 合格手', playerJp + ' は手堅い一手です。（AI最善手は ' + bestJp + '）', pre.pv, true);
-    } else {
-      setCoach('badge-warn', '⚡ 緩手（少し疑問）', playerJp + ' で少し形勢を損ねました。AIは ' + bestJp + ' を推奨していました。', pre.pv, true);
-    }
+    var cls, badge;
+    if (info.rank === 1 || loss <= 0) { cls = 'badge-good'; badge = '🌟 最善手'; }
+    else if (loss <= 15) { cls = 'badge-good'; badge = '◎ ほぼ最善（第' + info.rank + '位）'; }
+    else if (loss <= 60) { cls = 'badge-ok'; badge = '◯ 有力手（第' + info.rank + '位）'; }
+    else if (loss <= 150) { cls = 'badge-warn'; badge = '△ 疑問手'; }
+    else if (loss <= 350) { cls = 'badge-warn'; badge = '▲ 悪手'; }
+    else { cls = 'badge-bad'; badge = '× 大悪手'; }
+    if (isBook && info.rank !== 1) { cls = 'badge-good'; badge = '📖 定跡手'; }
+
+    setCoach(cls, badge, verdictBody(m, info, loss, isBook, bookEntry), pre.pv, true, info.cands);
 
     snapshot();
     applyMoveToState(m);
@@ -2058,7 +2154,7 @@ var SG = (function () {
         gameOver = true; busy = false;
         syncEngine();
         status(SG.inCheck(0) ? '詰みです……あなたの負けです。' : '指す手がありません（引き分け）。');
-        setCoach('badge-bad', '対局終了', '詰まされてしまいました。「初手から」でもう一局どうぞ。', null);
+        setCoach('badge-bad', '対局終了', '詰まされてしまいました。「初手から」でもう一局どうぞ。', null, true, null);
         return;
       }
       busy = false;
@@ -2141,8 +2237,8 @@ var SG = (function () {
     SG.clearTT();
     document.getElementById('brake-modal').style.display = 'none';
     document.getElementById('promote-modal').style.display = 'none';
-    setCoach('badge-ok', '対局開始', '対局を始めると、あなたの手とAIの最善手の解説がここに表示されます。', null);
-    setEngineInfo(null);
+    setCoach('badge-ok', '対局開始', '一手指すごとに、AIの最善手・あなたの手の順位・点差を表示します。', null, true, null);
+    setEngineInfo(null, null);
     refreshLegal();
     render();
     status('対局開始。あなたの手番です');
@@ -2154,6 +2250,6 @@ var SG = (function () {
     newGame();
   });
 })();
-    </script>
+          </script>
 </body>
 </html>
