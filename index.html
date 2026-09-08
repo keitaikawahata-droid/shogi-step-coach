@@ -61,6 +61,11 @@
       background: #37b24d;
       margin-right: 4px;
     }
+    #engine-info {
+      color: #7f8ea3;
+      font-size: 0.62rem;
+      margin-top: 1px;
+    }
     .control-panel {
       width: 100%;
       background: #2b2d42;
@@ -205,6 +210,9 @@
     .cell.punish-target { background-color: var(--danger-target) !important; }
     .cell.in-check { background-color: var(--check-king) !important; animation: blink 0.7s infinite alternate; }
     @keyframes blink { from { opacity: 0.6; } to { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) {
+      .cell.in-check { animation: none; }
+    }
     .gote { transform: rotate(180deg); color: #9b111e; }
     .sente { color: #111111; }
     #status-box {
@@ -298,6 +306,7 @@
       cursor: pointer;
       font-size: 0.82rem;
     }
+    .btn:focus-visible, .btn-action:focus-visible, select:focus-visible { outline: 2px solid #74c0fc; outline-offset: 2px; }
     .btn-why { background: #1971c2; color: #ffffff; }
     .btn-undo { background: #e03131; color: #ffffff; }
     .btn-continue { background: #ced4da; color: #343a40; }
@@ -313,8 +322,11 @@
     <!-- エンジンステータス -->
     <div class="engine-status-bar">
       <div>
-        <span id="engine-indicator" class="status-badge"></span>
-        <span id="engine-label">内蔵本格思考エンジン: 稼働中</span>
+        <div>
+          <span id="engine-indicator" class="status-badge"></span>
+          <span id="engine-label">内蔵思考エンジン Kirin：起動中</span>
+        </div>
+        <div id="engine-info"></div>
       </div>
       <div id="eval-display">評価値: 0</div>
     </div>
@@ -326,7 +338,8 @@
         <select id="cpu-level">
           <option value="1">初級（入門）</option>
           <option value="2">中級（手堅い）</option>
-          <option value="3" selected>上級（本格探索・初段級）</option>
+          <option value="3" selected>上級（本格探索）</option>
+          <option value="4">最強（長考・有段者級）</option>
         </select>
       </div>
 
@@ -409,582 +422,1738 @@
     </div>
   </div>
 
-  <script>
-    const KANJI = {
-      FU: '歩', KY: '香', KE: '桂', GI: '銀', KI: '金', KA: '角', HI: '飛', OU: '玉',
-      TO: 'と', NY: '杏', NK: '圭', NG: '全', UM: '馬', RY: '竜'
-    };
-    const PROMOTE_MAP = { FU: 'TO', KY: 'NY', KE: 'NK', GI: 'NG', KA: 'UM', HI: 'RY' };
-    const RAW_MAP = { TO: 'FU', NY: 'KY', NK: 'KE', NG: 'GI', UM: 'KA', RY: 'HI' };
+  <script id="engine-src">
 
-    const HAND_ORDER = ['HI', 'KA', 'KI', 'GI', 'KE', 'KY', 'FU'];
+/* =========================================================================
+   将棋ステップコーチ  内蔵思考エンジン "Kirin"
+   - Int8Array mailbox 盤面 / Make-Unmake 差分更新
+   - Zobrist Hash + 置換表
+   - 反復深化 + PVS + Null Move + LMR + 静止探索 + 1手詰め
+   - PST / 玉の安全度 / 利き(Mobility) 評価
+   ========================================================================= */
+var SG = (function () {
+  'use strict';
 
-    // 駒の基本価値
-    const PIECE_VALS = {
-      FU: 100, KY: 320, KE: 420, GI: 620, KI: 680, KA: 950, HI: 1150, OU: 30000,
-      TO: 620, NY: 580, NK: 580, NG: 600, UM: 1200, RY: 1400
-    };
+  /* ---------------- 駒コード ----------------
+     type: 1..15 (13は未使用)  color: 0=先手 1=後手
+     piece = type | (color<<4)                                    */
+  var FU = 1, KY = 2, KE = 3, GI = 4, KI = 5, KA = 6, HI = 7, OU = 8;
+  var TO = 9, NY = 10, NK = 11, NG = 12, UM = 14, RY = 15;
+  var ALL_TYPES = [FU, KY, KE, GI, KI, KA, HI, OU, TO, NY, NK, NG, UM, RY];
+  var HAND_TYPES = [HI, KA, KI, GI, KE, KY, FU];
 
-    const ASSIST_THRESHOLDS = {
-      '10k': 650, '5k': 380, '1d': 200, '3d': 110, 'off': 999999
-    };
+  var PROM = new Int32Array(16);
+  PROM[FU] = TO; PROM[KY] = NY; PROM[KE] = NK; PROM[GI] = NG; PROM[KA] = UM; PROM[HI] = RY;
+  var RAW = new Int32Array(16);
+  for (var _i = 0; _i < 16; _i++) RAW[_i] = _i;
+  RAW[TO] = FU; RAW[NY] = KY; RAW[NK] = KE; RAW[NG] = GI; RAW[UM] = KA; RAW[RY] = HI;
 
-    // 序盤定跡（代表的な立ち上がり）
-    const OPENING_BOOK = {
-      "": { move: "7g7f", comment: "角道を開け、主導権を握る現代将棋の標準的な初手です。" },
-      "7g7f": { move: "3c3d", comment: "お互いに角道を開け、激しい戦いや本格的な駒組みを目指す定番の応手です。" },
-      "7g7f 3c3d": { move: "2g2f", comment: "飛車先の歩を突き、先手から主導権を握りに行く居飛車党の代表的な手です。" },
-      "7g7f 3c3d 2g2f": { move: "8c8d", comment: "こちらも飛車先を突き返し、相居飛車の力戦を志向する堂々の一手です。" },
-      "7g7f 3c3d 2g2f 8c8d": { move: "2f2e", comment: "飛車先をさらに伸ばして相手の陣形を圧迫します。" },
-      "7g7f 3c3d 2g2f 8c8d 2f2e": { move: "8d8e", comment: "お互いに飛車先を伸ばし合い、緊張感が高まる局面です。" }
-    };
+  /* ---------------- 駒の基本価値 ---------------- */
+  var MAT = new Int32Array(16);
+  MAT[FU] = 100; MAT[KY] = 350; MAT[KE] = 450; MAT[GI] = 550; MAT[KI] = 600;
+  MAT[KA] = 950; MAT[HI] = 1100; MAT[OU] = 0;
+  MAT[TO] = 600; MAT[NY] = 550; MAT[NK] = 560; MAT[NG] = 570; MAT[UM] = 1150; MAT[RY] = 1350;
 
-    let board = [];
-    let hands = { 0: {}, 1: {} };
-    let turn = 0;
-    let selectedSquare = null;
-    let selectedDrop = null;
-    let legalMoves = [];
-    let isCpuBusy = false;
-    let pendingPunish = null;
-    let pendingPromotion = null;
-    let lastMove = null;
-    let moveHistory = [];
-    let usiHistory = [];
-    let currentEvalScore = 0;
+  /* 持ち駒は盤上より少し高く見る(打てる自由度) */
+  var HANDV = new Int32Array(16);
+  HANDV[FU] = 115; HANDV[KY] = 400; HANDV[KE] = 500; HANDV[GI] = 620;
+  HANDV[KI] = 670; HANDV[KA] = 1050; HANDV[HI] = 1250;
 
-    // ==========================================
-    // 内蔵本格思考ルーチン
-    // ==========================================
-    function evaluateBoard(b, h) {
-      let score = 0;
-      for (let r = 0; r < 9; r++) {
-        for (let c = 0; c < 9; c++) {
-          const p = b[r][c];
-          if (!p) continue;
-          let val = PIECE_VALS[p.type] || 0;
-          if (p.color === 0) {
-            val += (8 - r) * 5;
-            if (c >= 3 && c <= 5) val += 15;
-            score += val;
-          } else {
-            val += r * 5;
-            if (c >= 3 && c <= 5) val += 15;
-            score -= val;
-          }
-        }
+  /* 取る価値(MVV-LVA用。玉は最大) */
+  var CAPV = new Int32Array(16);
+  for (var _t = 0; _t < 16; _t++) CAPV[_t] = MAT[_t];
+  CAPV[OU] = 20000;
+
+  /* ---------------- Piece-Square Tables ----------------
+     先手視点。index = row*9+col、row0 = 敵陣一段目、row8 = 自陣九段目
+     col0 = 9筋、col8 = 1筋                                        */
+  var PST = {};
+
+  PST[FU] = [
+      0,  0,  0,  0,  0,  0,  0,  0,  0,
+     28, 30, 32, 34, 36, 34, 32, 30, 28,
+     22, 24, 26, 28, 30, 28, 26, 24, 22,
+     14, 16, 18, 22, 24, 22, 18, 16, 14,
+      8, 10, 12, 16, 18, 16, 12, 10,  8,
+      4,  6,  8, 10, 12, 10,  8,  6,  4,
+      0,  0,  2,  4,  6,  4,  2,  0,  0,
+     -6, -6, -4, -2,  0, -2, -4, -6, -6,
+      0,  0,  0,  0,  0,  0,  0,  0,  0
+  ];
+
+  PST[KY] = [
+      0,  0,  0,  0,  0,  0,  0,  0,  0,
+     10, 12, 14, 16, 16, 16, 14, 12, 10,
+      8, 10, 12, 14, 14, 14, 12, 10,  8,
+      4,  6,  8, 10, 10, 10,  8,  6,  4,
+      2,  4,  6,  8,  8,  8,  6,  4,  2,
+      0,  2,  4,  6,  6,  6,  4,  2,  0,
+     -2,  0,  2,  4,  4,  4,  2,  0, -2,
+     -4, -2,  0,  2,  2,  2,  0, -2, -4,
+      0, -2, -4, -6, -6, -6, -4, -2,  0
+  ];
+
+  PST[KE] = [
+      0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,
+      4, 10, 16, 20, 20, 20, 16, 10,  4,
+      6, 12, 18, 22, 22, 22, 18, 12,  6,
+      2,  8, 12, 16, 16, 16, 12,  8,  2,
+     -2,  2,  6, 10, 10, 10,  6,  2, -2,
+     -6, -2,  2,  4,  4,  4,  2, -2, -6,
+     -8, -6, -2,  0,  0,  0, -2, -6, -8,
+    -10, -8, -6, -4, -4, -4, -6, -8,-10
+  ];
+
+  PST[GI] = [
+      0,  4,  8, 10, 10, 10,  8,  4,  0,
+      4, 10, 14, 16, 16, 16, 14, 10,  4,
+      8, 14, 20, 22, 22, 22, 20, 14,  8,
+     10, 16, 20, 22, 22, 22, 20, 16, 10,
+      6, 12, 16, 18, 18, 18, 16, 12,  6,
+      2,  6, 10, 12, 12, 12, 10,  6,  2,
+      0,  4,  6,  8,  8,  8,  6,  4,  0,
+      6, 10, 10,  6,  4,  6, 10, 10,  6,
+      4,  6,  6,  2,  0,  2,  6,  6,  4
+  ];
+
+  PST[KI] = [
+     -4,  0,  4,  6,  6,  6,  4,  0, -4,
+      0,  6, 10, 12, 12, 12, 10,  6,  0,
+      4, 10, 16, 18, 18, 18, 16, 10,  4,
+      6, 12, 16, 18, 18, 18, 16, 12,  6,
+      4,  8, 12, 14, 14, 14, 12,  8,  4,
+      2,  6,  8, 10, 10, 10,  8,  6,  2,
+      4,  8, 10, 10,  8, 10, 10,  8,  4,
+     10, 14, 14, 12,  8, 12, 14, 14, 10,
+      6, 10, 10,  6,  2,  6, 10, 10,  6
+  ];
+
+  PST[KA] = [
+      0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  4,  6,  8,  8,  8,  6,  4,  0,
+      0,  6, 10, 12, 12, 12, 10,  6,  0,
+      0,  6, 10, 14, 14, 14, 10,  6,  0,
+      0,  6, 10, 14, 16, 14, 10,  6,  0,
+      0,  6, 10, 12, 12, 12, 10,  6,  0,
+      0,  4,  8, 10, 10, 10,  8,  4,  0,
+      0,  0,  4,  6,  6,  6,  4,  0,  0,
+     -4,  0,  0,  2,  2,  2,  0,  0, -4
+  ];
+
+  PST[HI] = [
+      8, 10, 12, 12, 12, 12, 12, 10,  8,
+     10, 14, 16, 18, 18, 18, 16, 14, 10,
+     12, 16, 20, 22, 22, 22, 20, 16, 12,
+      6,  8, 10, 12, 12, 12, 10,  8,  6,
+      2,  4,  6,  8,  8,  8,  6,  4,  2,
+      0,  2,  4,  6,  6,  6,  4,  2,  0,
+      0,  2,  4,  4,  4,  4,  4,  2,  0,
+      0,  4,  6,  6,  4,  6,  8, 10,  6,
+      0,  0,  2,  2,  0,  2,  4,  4,  0
+  ];
+
+  /* 玉:自陣に留まり、囲いの位置(端寄り)を高評価。前進は強く抑制 */
+  PST[OU] = [
+   -300,-300,-300,-300,-300,-300,-300,-300,-300,
+   -260,-260,-260,-260,-260,-260,-260,-260,-260,
+   -220,-220,-220,-220,-220,-220,-220,-220,-220,
+   -170,-170,-170,-170,-170,-170,-170,-170,-170,
+   -120,-120,-120,-120,-120,-120,-120,-120,-120,
+    -70, -70, -70, -70, -70, -70, -70, -70, -70,
+    -30, -25, -25, -30, -35, -30, -25, -25, -30,
+     10,  16,  14,   4,  -6,   4,  14,  16,  10,
+     24,  30,  26,  10,   0,  10,  26,  30,  24
+  ];
+
+  /* と金・成香・成桂・成銀は共通(敵陣に残るほど良い) */
+  var PSTGOLDP = [
+     20, 22, 24, 26, 26, 26, 24, 22, 20,
+     22, 26, 30, 32, 32, 32, 30, 26, 22,
+     20, 24, 28, 30, 30, 30, 28, 24, 20,
+     14, 18, 22, 24, 24, 24, 22, 18, 14,
+     10, 12, 16, 18, 18, 18, 16, 12, 10,
+      6,  8, 12, 14, 14, 14, 12,  8,  6,
+      4,  6,  8, 10, 10, 10,  8,  6,  4,
+      2,  4,  6,  8,  8,  8,  6,  4,  2,
+      0,  2,  4,  6,  6,  6,  4,  2,  0
+  ];
+  PST[TO] = PSTGOLDP; PST[NY] = PSTGOLDP; PST[NK] = PSTGOLDP; PST[NG] = PSTGOLDP;
+
+  PST[UM] = [
+     10, 12, 14, 16, 16, 16, 14, 12, 10,
+     12, 16, 20, 22, 22, 22, 20, 16, 12,
+     14, 20, 24, 26, 26, 26, 24, 20, 14,
+     14, 20, 26, 30, 30, 30, 26, 20, 14,
+     12, 18, 24, 28, 30, 28, 24, 18, 12,
+     12, 18, 22, 26, 26, 26, 22, 18, 12,
+     12, 16, 20, 22, 22, 22, 20, 16, 12,
+     12, 16, 18, 20, 20, 20, 18, 16, 12,
+     10, 12, 14, 16, 16, 16, 14, 12, 10
+  ];
+
+  PST[RY] = [
+     20, 22, 24, 26, 26, 26, 24, 22, 20,
+     22, 26, 30, 32, 32, 32, 30, 26, 22,
+     24, 28, 32, 34, 34, 34, 32, 28, 24,
+     18, 22, 26, 28, 28, 28, 26, 22, 18,
+     14, 18, 22, 24, 24, 24, 22, 18, 14,
+     12, 16, 20, 22, 22, 22, 20, 16, 12,
+     12, 16, 18, 20, 20, 20, 18, 16, 12,
+     12, 14, 16, 18, 18, 18, 16, 14, 12,
+     10, 12, 14, 16, 16, 16, 14, 12, 10
+  ];
+
+  /* PSTV[piece*81+sq] = 先手プラスの合計点(駒価値+配置点) */
+  var PSTV = new Int32Array(32 * 81);
+  (function () {
+    for (var i = 0; i < ALL_TYPES.length; i++) {
+      var t = ALL_TYPES[i], tab = PST[t];
+      for (var sq = 0; sq < 81; sq++) {
+        PSTV[t * 81 + sq] = MAT[t] + tab[sq];
+        PSTV[(t | 16) * 81 + sq] = -(MAT[t] + tab[80 - sq]);
       }
-      HAND_ORDER.forEach(t => {
-        score += (h[0][t] || 0) * (PIECE_VALS[t] * 1.15);
-        score -= (h[1][t] || 0) * (PIECE_VALS[t] * 1.15);
-      });
-      score += evaluateKingSafety(b, 0) - evaluateKingSafety(b, 1);
-      return score;
     }
+  })();
 
-    function evaluateKingSafety(b, color) {
-      let kr = -1, kc = -1;
-      for (let r = 0; r < 9; r++) {
-        for (let c = 0; c < 9; c++) {
-          const p = b[r][c];
-          if (p && p.color === color && p.type === 'OU') {
-            kr = r; kc = c; break;
-          }
+  /* 大駒の利き評価 / 敵玉への接近圧 */
+  var MOBW = new Int32Array(16);
+  MOBW[KA] = 5; MOBW[HI] = 5; MOBW[UM] = 4; MOBW[RY] = 4;
+  var ATKW = new Int32Array(16);
+  ATKW[FU] = 2; ATKW[KY] = 4; ATKW[KE] = 5; ATKW[GI] = 7; ATKW[KI] = 7;
+  ATKW[KA] = 6; ATKW[HI] = 8; ATKW[TO] = 7; ATKW[NY] = 7; ATKW[NK] = 7;
+  ATKW[NG] = 7; ATKW[UM] = 11; ATKW[RY] = 12;
+
+  /* ---------------- 方向・レイテーブル ---------------- */
+  /* 0:上 1:右上 2:右 3:右下 4:下 5:左下 6:左 7:左上 */
+  var DR = [-1, -1, 0, 1, 1, 1, 0, -1];
+  var DC = [0, 1, 1, 1, 0, -1, -1, -1];
+
+  var RAY = new Array(81);
+  (function () {
+    for (var sq = 0; sq < 81; sq++) {
+      var r = (sq / 9) | 0, c = sq % 9;
+      RAY[sq] = new Array(8);
+      for (var d = 0; d < 8; d++) {
+        var arr = [], nr = r + DR[d], nc = c + DC[d];
+        while (nr >= 0 && nr < 9 && nc >= 0 && nc < 9) {
+          arr.push(nr * 9 + nc); nr += DR[d]; nc += DC[d];
         }
-        if (kr !== -1) break;
+        RAY[sq][d] = Int32Array.from(arr);
       }
-      if (kr === -1) return -9999;
+    }
+  })();
 
-      let safety = 0;
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          const nr = kr + dr, nc = kc + dc;
-          if (nr >= 0 && nr < 9 && nc >= 0 && nc < 9) {
-            const p = b[nr][nc];
-            if (p && p.color === color) {
-              if (p.type === 'KI' || p.type === 'GI' || p.type === 'TO' || p.type === 'NY' || p.type === 'NK' || p.type === 'NG') {
-                safety += 45;
-              }
+  var stepBase = {};
+  stepBase[FU] = [0];
+  stepBase[GI] = [0, 1, 7, 3, 5];
+  stepBase[KI] = [0, 1, 7, 2, 6, 4];
+  stepBase[TO] = stepBase[KI]; stepBase[NY] = stepBase[KI];
+  stepBase[NK] = stepBase[KI]; stepBase[NG] = stepBase[KI];
+  stepBase[UM] = [0, 2, 4, 6];
+  stepBase[RY] = [1, 3, 5, 7];
+  stepBase[OU] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+  var slideBase = {};
+  slideBase[KY] = [0];
+  slideBase[KA] = [1, 3, 5, 7];
+  slideBase[HI] = [0, 2, 4, 6];
+  slideBase[UM] = [1, 3, 5, 7];
+  slideBase[RY] = [0, 2, 4, 6];
+
+  var STEP_TGT = new Array(32);
+  var SLIDE_D = new Array(32);
+  var STEP_MASK = new Int32Array(32);
+  var SLIDE_MASK = new Int32Array(32);
+
+  (function () {
+    for (var col = 0; col < 2; col++) {
+      for (var i = 0; i < ALL_TYPES.length; i++) {
+        var t = ALL_TYPES[i], p = t | (col << 4);
+        var sd = (stepBase[t] || []).map(function (d) { return col === 0 ? d : (d + 4) & 7; });
+        var ld = (slideBase[t] || []).map(function (d) { return col === 0 ? d : (d + 4) & 7; });
+        SLIDE_D[p] = Int32Array.from(ld);
+        var sm = 0, lm = 0, k;
+        for (k = 0; k < sd.length; k++) sm |= 1 << sd[k];
+        for (k = 0; k < ld.length; k++) lm |= 1 << ld[k];
+        STEP_MASK[p] = sm; SLIDE_MASK[p] = lm;
+        STEP_TGT[p] = new Array(81);
+        for (var sq = 0; sq < 81; sq++) {
+          var r = (sq / 9) | 0, c = sq % 9, arr = [];
+          for (k = 0; k < sd.length; k++) {
+            var nr = r + DR[sd[k]], nc = c + DC[sd[k]];
+            if (nr >= 0 && nr < 9 && nc >= 0 && nc < 9) arr.push(nr * 9 + nc);
+          }
+          if (t === KE) {
+            var jr = r + (col === 0 ? -2 : 2);
+            if (jr >= 0 && jr < 9) {
+              if (c - 1 >= 0) arr.push(jr * 9 + c - 1);
+              if (c + 1 < 9) arr.push(jr * 9 + c + 1);
             }
           }
+          STEP_TGT[p][sq] = Int32Array.from(arr);
         }
       }
-      // 王様特攻ペナルティ（これで5一のような無謀な前進を防ぎます）
-      if (color === 0 && kr <= 6) safety -= (7 - kr) * 80;
-      if (color === 1 && kr >= 2) safety -= (kr - 1) * 80;
-
-      return safety;
     }
+  })();
 
-    function quiescenceSearch(b, h, color, alpha, beta, depth) {
-      const standPat = (color === 0) ? evaluateBoard(b, h) : -evaluateBoard(b, h);
-      if (depth <= 0) return standPat;
-      if (standPat >= beta) return beta;
-      if (standPat > alpha) alpha = standPat;
+  /* ---------------- Zobrist ---------------- */
+  var rngS = 0x9e3779b9;
+  function rnd32() {
+    rngS ^= rngS << 13; rngS |= 0;
+    rngS ^= rngS >>> 17;
+    rngS ^= rngS << 5; rngS |= 0;
+    return rngS | 0;
+  }
+  var ZPL = new Int32Array(32 * 81), ZPH = new Int32Array(32 * 81);
+  var ZHL = new Int32Array(32 * 20), ZHH = new Int32Array(32 * 20);
+  var ZSL = 0, ZSH = 0;
+  (function () {
+    var i;
+    for (i = 0; i < 32 * 81; i++) { ZPL[i] = rnd32(); ZPH[i] = rnd32(); }
+    for (i = 0; i < 32 * 20; i++) { ZHL[i] = rnd32(); ZHH[i] = rnd32(); }
+    ZSL = rnd32(); ZSH = rnd32();
+  })();
 
-      const captures = getStrictLegalMoves(b, h, color).filter(m => !m.drop && b[m.toR][m.toC]);
-      captures.sort((x, y) => (PIECE_VALS[b[y.toR][y.toC].type] || 0) - (PIECE_VALS[b[x.toR][x.toC].type] || 0));
+  /* ---------------- 局面状態 ---------------- */
+  var MAXPLY = 80;
+  var SEARCH_MAXPLY = 64;
+  var MAXMOVE = 640;
 
-      for (const m of captures) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || m.from.r <= 2)) || (color === 1 && (m.toR >= 6 || m.from.r >= 6));
-        executeMoveOnBoard(simB, simH, color, m.from, null, m.toR, m.toC, canProm);
+  var bd = new Int8Array(81);
+  var hd = new Int32Array(32);
+  var side = 0;
+  var kingSq = new Int32Array(2);
+  var keyLo = 0, keyHi = 0;
 
-        const score = -quiescenceSearch(simB, simH, 1 - color, -beta, -alpha, depth - 1);
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
-      }
-      return alpha;
+  var moveBuf = new Array(MAXPLY);
+  var scoreBuf = new Array(MAXPLY);
+  (function () {
+    for (var i = 0; i < MAXPLY; i++) {
+      moveBuf[i] = new Int32Array(MAXMOVE);
+      scoreBuf[i] = new Int32Array(MAXMOVE);
     }
+  })();
 
-    function alphaBetaSearch(b, h, color, depth, alpha, beta) {
-      if (depth <= 0) return quiescenceSearch(b, h, color, alpha, beta, 4);
+  var USTACK = 1024;
+  var uMove = new Int32Array(USTACK), uCap = new Int32Array(USTACK);
+  var uKeyLo = new Int32Array(USTACK), uKeyHi = new Int32Array(USTACK);
+  var uK0 = new Int32Array(USTACK), uK1 = new Int32Array(USTACK);
+  var undoTop = 0;
+  var uchiGuard = false;
 
-      const legal = getStrictLegalMoves(b, h, color);
-      if (legal.length === 0) return isKingInCheck(b, color) ? -28000 : 0;
+  /* 対局の過去局面ハッシュ(千日手検出用) */
+  var ghLo = new Int32Array(600), ghHi = new Int32Array(600), ghLen = 0;
 
-      legal.sort((x, y) => {
-        let scoreX = 0, scoreY = 0;
-        if (!x.drop && b[x.toR][x.toC]) scoreX += (PIECE_VALS[b[x.toR][x.toC].type] || 0) * 10;
-        if (!y.drop && b[y.toR][y.toC]) scoreY += (PIECE_VALS[b[y.toR][y.toC].type] || 0) * 10;
-        return scoreY - scoreX;
-      });
+  /* ---------------- 指し手エンコード ----------------
+     bit  0- 6 : to
+     bit  7-13 : from (127 = 打つ手)
+     bit 14    : 成りフラグ
+     bit 15-18 : 打つ駒種
+     bit 19-23 : 動かす駒コード(色込み)
+     bit 24-27 : 取る駒の種類                                     */
+  function mkMove(from, to, promo, drop, piece, capType) {
+    return (to | (from << 7) | (promo << 14) | (drop << 15) | (piece << 19) | (capType << 24));
+  }
+  function mTo(m) { return m & 127; }
+  function mFrom(m) { return (m >>> 7) & 127; }
+  function mProm(m) { return (m >>> 14) & 1; }
+  function mDrop(m) { return (m >>> 15) & 15; }
+  function mPiece(m) { return (m >>> 19) & 31; }
+  function mCap(m) { return (m >>> 24) & 15; }
 
-      for (const m of legal) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
-                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
-
-        const score = -alphaBetaSearch(simB, simH, 1 - color, depth - 1, -beta, -alpha);
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
-      }
-      return alpha;
+  function computeKey() {
+    keyLo = 0; keyHi = 0;
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bd[sq];
+      if (p) { keyLo ^= ZPL[p * 81 + sq]; keyHi ^= ZPH[p * 81 + sq]; }
+      if (p && (p & 15) === OU) kingSq[p >> 4] = sq;
     }
-
-    function analyzePosition(b, h, color, depth = 3) {
-      const movesKey = usiHistory.join(" ");
-      if (OPENING_BOOK[movesKey]) {
-        const bookEntry = OPENING_BOOK[movesKey];
-        const m = usiToMove(bookEntry.move);
-        return { bestMove: bookEntry.move, bestObj: m, score: 0, pv: [bookEntry.move], isBook: true, comment: bookEntry.comment };
-      }
-
-      const legal = getStrictLegalMoves(b, h, color);
-      if (legal.length === 0) return { bestMove: null, score: 0, pv: [] };
-
-      legal.sort((x, y) => {
-        let scoreX = 0, scoreY = 0;
-        if (!x.drop && b[x.toR][x.toC]) scoreX += (PIECE_VALS[b[x.toR][x.toC].type] || 0) * 10;
-        if (!y.drop && b[y.toR][y.toC]) scoreY += (PIECE_VALS[b[y.toR][y.toC].type] || 0) * 10;
-        return scoreY - scoreX;
-      });
-
-      let bestVal = -999999;
-      let bestMoveObj = legal[0];
-
-      for (const m of legal) {
-        const simB = JSON.parse(JSON.stringify(b));
-        const simH = JSON.parse(JSON.stringify(h));
-        const canProm = (color === 0 && (m.toR <= 2 || (m.from && m.from.r <= 2))) ||
-                        (color === 1 && (m.toR >= 6 || (m.from && m.from.r >= 6)));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, canProm);
-
-        const val = -alphaBetaSearch(simB, simH, 1 - color, depth - 1, -999999, 999999);
-        if (val > bestVal) { bestVal = val; bestMoveObj = m; }
-      }
-
-      const canPromBest = (color === 0 && (bestMoveObj.toR <= 2 || (bestMoveObj.from && bestMoveObj.from.r <= 2))) ||
-                          (color === 1 && (bestMoveObj.toR >= 6 || (bestMoveObj.from && bestMoveObj.from.r >= 6)));
-      const bestUsi = moveToUsi(bestMoveObj, canPromBest);
-
-      return { bestMove: bestUsi, bestObj: { ...bestMoveObj, promote: canPromBest }, score: (color === 0) ? bestVal : -bestVal, pv: [bestUsi], isBook: false };
-    }
-
-    // ==========================================
-    // 盤面管理・ゲームループ
-    // ==========================================
-    function initGame() {
-      board = Array(9).fill(null).map(() => Array(9).fill(null));
-      hands = { 0: {}, 1: {} };
-      HAND_ORDER.forEach(k => { hands[0][k] = 0; hands[1][k] = 0; });
-      turn = 0;
-      selectedSquare = null; selectedDrop = null; legalMoves = [];
-      isCpuBusy = false; pendingPunish = null; pendingPromotion = null; lastMove = null;
-      moveHistory = []; usiHistory = []; currentEvalScore = 0;
-
-      const goteRow0 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
-      for (let c = 0; c < 9; c++) board[0][c] = { type: goteRow0[c], color: 1 };
-      board[1][1] = { type: 'HI', color: 1 }; board[1][7] = { type: 'KA', color: 1 };
-      for (let c = 0; c < 9; c++) board[2][c] = { type: 'FU', color: 1 };
-      for (let c = 0; c < 9; c++) board[6][c] = { type: 'FU', color: 0 };
-      board[7][1] = { type: 'KA', color: 0 }; board[7][7] = { type: 'HI', color: 0 };
-      const senteRow8 = ['KY','KE','GI','KI','OU','KI','GI','KE','KY'];
-      for (let c = 0; c < 9; c++) board[8][c] = { type: senteRow8[c], color: 0 };
-
-      document.getElementById('brake-modal').style.display = 'none';
-      document.getElementById('promote-modal').style.display = 'none';
-      document.getElementById('eval-display').textContent = '評価値: 0';
-      resetCoachCard(); buildBoardDOM(); updateDisplay();
-    }
-
-    function resetCoachCard() {
-      document.getElementById('coach-badge').className = 'coach-badge badge-ok';
-      document.getElementById('coach-badge').textContent = '対局開始';
-      document.getElementById('coach-body').textContent = '対局を始めると、解説がここに表示されます。';
-      document.getElementById('coach-pv').style.display = 'none';
-    }
-
-    function confirmReset() { if (confirm('対局をリセットして初手からやり直しますか？')) initGame(); }
-
-    function buildBoardDOM() {
-      const boardEl = document.getElementById('board');
-      boardEl.innerHTML = '';
-      for (let r = 0; r < 9; r++) {
-        for (let c = 0; c < 9; c++) {
-          const cell = document.createElement('div');
-          cell.className = 'cell'; cell.dataset.r = r; cell.dataset.c = c;
-          boardEl.appendChild(cell);
+    for (var c = 0; c < 2; c++) {
+      for (var i = 0; i < 7; i++) {
+        var t = HAND_TYPES[i], n = hd[c * 16 + t];
+        for (var k = 1; k <= n; k++) {
+          keyLo ^= ZHL[(c * 16 + t) * 20 + k];
+          keyHi ^= ZHH[(c * 16 + t) * 20 + k];
         }
       }
-      boardEl.onclick = handleBoardClick;
     }
+    if (side === 1) { keyLo ^= ZSL; keyHi ^= ZSH; }
+  }
 
-    function handleBoardClick(e) {
-      if (isCpuBusy || turn !== 0) return;
-      const cell = e.target.closest('.cell');
-      if (!cell) return;
-      onCellClick(parseInt(cell.dataset.r, 10), parseInt(cell.dataset.c, 10));
+  function setPosition(board81, hand32, stm, histKeys) {
+    for (var i = 0; i < 81; i++) bd[i] = board81[i];
+    for (var j = 0; j < 32; j++) hd[j] = hand32[j] || 0;
+    side = stm | 0;
+    kingSq[0] = -1; kingSq[1] = -1;
+    computeKey();
+    undoTop = 0; uchiGuard = false;
+    ghLen = 0;
+    if (histKeys && histKeys.length) {
+      var n = histKeys.length >> 1;
+      var st = Math.max(0, n - 200);
+      for (var k = st; k < n; k++) { ghLo[ghLen] = histKeys[k * 2]; ghHi[ghLen] = histKeys[k * 2 + 1]; ghLen++; }
     }
+  }
 
-    function updateDisplay(highlightAttacker = null, highlightTarget = null) {
-      const cells = document.querySelectorAll('#board .cell');
-      const senteKingInCheck = isKingInCheck(board, 0);
+  function initialPosition() {
+    bd.fill(0); hd.fill(0);
+    var back = [KY, KE, GI, KI, OU, KI, GI, KE, KY];
+    for (var c = 0; c < 9; c++) {
+      bd[c] = back[c] | 16;
+      bd[18 + c] = FU | 16;
+      bd[54 + c] = FU;
+      bd[72 + c] = back[c];
+    }
+    bd[9 + 1] = HI | 16; bd[9 + 7] = KA | 16;
+    bd[63 + 1] = KA; bd[63 + 7] = HI;
+    side = 0; undoTop = 0; ghLen = 0;
+    kingSq[0] = -1; kingSq[1] = -1;
+    computeKey();
+  }
 
-      cells.forEach(cell => {
-        const r = parseInt(cell.dataset.r, 10);
-        const c = parseInt(cell.dataset.c, 10);
-        const piece = board[r][c];
-        cell.className = 'cell';
-        cell.textContent = piece ? KANJI[piece.type] : '';
-        if (piece) {
-          cell.classList.add(piece.color === 1 ? 'gote' : 'sente');
-          if (piece.type === 'OU' && piece.color === 0 && senteKingInCheck) cell.classList.add('in-check');
+  /* ---------------- 利き判定 ---------------- */
+  function isAttacked(sq, byColor) {
+    if (sq < 0) return false;
+    for (var d = 0; d < 8; d++) {
+      var ray = RAY[sq][d], len = ray.length;
+      for (var i = 0; i < len; i++) {
+        var q = bd[ray[i]];
+        if (q) {
+          if ((q >> 4) === byColor) {
+            var dd = (d + 4) & 7;
+            if (i === 0 && ((STEP_MASK[q] >>> dd) & 1)) return true;
+            if ((SLIDE_MASK[q] >>> dd) & 1) return true;
+          }
+          break;
         }
-        if (lastMove && ((lastMove.fromR === r && lastMove.fromC === c) || (lastMove.toR === r && lastMove.toC === c))) {
-          cell.classList.add(lastMove.fromR === r && lastMove.fromC === c ? 'last-move-from' : 'last-move-to');
-        }
-        if (selectedSquare && selectedSquare.r === r && selectedSquare.c === c) cell.classList.add('selected');
-        if (legalMoves.some(m => m.toR === r && m.toC === c)) cell.classList.add('movable');
-        if (highlightAttacker && highlightAttacker.r === r && highlightAttacker.c === c) cell.classList.add('punish-attacker');
-        if (highlightTarget && highlightTarget.r === r && highlightTarget.c === c) cell.classList.add('punish-target');
-      });
-
-      renderStand('sente-stand', 0); renderStand('gote-stand', 1);
-      const statusEl = document.getElementById('status-box');
-      if (senteKingInCheck && !isCpuBusy && turn === 0) statusEl.textContent = '⚠️ 王手されています！';
-    }
-
-    function renderStand(elId, color) {
-      const el = document.getElementById(elId); el.innerHTML = '';
-      let hasAny = false;
-      HAND_ORDER.forEach(type => {
-        const count = hands[color][type] || 0;
-        if (count > 0) {
-          hasAny = true;
-          const chip = document.createElement('div');
-          chip.className = 'stand-piece';
-          chip.textContent = `${KANJI[type]}${count > 1 ? '×' + count : ''}`;
-          if (color === 0 && selectedDrop === type) chip.classList.add('selected');
-          if (color === 0 && !isCpuBusy && turn === 0) chip.onclick = () => onSelectDrop(type);
-          el.appendChild(chip);
-        }
-      });
-      if (!hasAny) el.textContent = 'なし';
-    }
-
-    function onSelectDrop(type) {
-      if (selectedDrop === type) { selectedDrop = null; legalMoves = []; updateDisplay(); return; }
-      selectedSquare = null; selectedDrop = type;
-      legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.drop === type);
-      updateDisplay();
-    }
-
-    function onCellClick(r, c) {
-      const targetMove = legalMoves.find(m => m.toR === r && m.toC === c);
-      if (targetMove) {
-        const piece = targetMove.drop ? null : board[targetMove.from.r][targetMove.from.c];
-        const canPromote = piece && PROMOTE_MAP[piece.type] && (targetMove.toR <= 2 || targetMove.from.r <= 2);
-        const mustPromote = piece && ((piece.type === 'FU' || piece.type === 'KY') && targetMove.toR === 0) || (piece.type === 'KE' && targetMove.toR <= 1);
-
-        if (mustPromote) processPlayerMove(targetMove, true);
-        else if (canPromote) { isCpuBusy = true; pendingPromotion = targetMove; document.getElementById('promote-modal').style.display = 'block'; }
-        else processPlayerMove(targetMove, false);
-        return;
-      }
-      const piece = board[r][c];
-      if (piece && piece.color === 0) {
-        selectedDrop = null; selectedSquare = { r, c };
-        legalMoves = getStrictLegalMoves(board, hands, 0).filter(m => m.from && m.from.r === r && m.from.c === c);
-        updateDisplay();
-      } else { selectedSquare = null; selectedDrop = null; legalMoves = []; updateDisplay(); }
-    }
-
-    function finishPromotion(promote) {
-      document.getElementById('promote-modal').style.display = 'none';
-      if (pendingPromotion) { const move = pendingPromotion; pendingPromotion = null; processPlayerMove(move, promote); }
-    }
-
-    function moveToUsi(move, promote) {
-      const files = ['9','8','7','6','5','4','3','2','1'], ranks = ['a','b','c','d','e','f','g','h','i'];
-      if (move.drop) {
-        const tl = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' }[move.drop];
-        return `${tl}*${files[move.toC]}${ranks[move.toR]}`;
-      } else {
-        return `${files[move.from.c]}${ranks[move.from.r]}${files[move.toC]}${ranks[move.toR]}${promote ? '+' : ''}`;
       }
     }
+    var r = (sq / 9) | 0, c = sq % 9;
+    var kr = r + (byColor === 0 ? 2 : -2);
+    if (kr >= 0 && kr < 9) {
+      var kp = KE | (byColor << 4);
+      if (c - 1 >= 0 && bd[kr * 9 + c - 1] === kp) return true;
+      if (c + 1 < 9 && bd[kr * 9 + c + 1] === kp) return true;
+    }
+    return false;
+  }
 
-    function usiToMove(usi) {
-      const files = ['9','8','7','6','5','4','3','2','1'], ranks = ['a','b','c','d','e','f','g','h','i'];
-      const tm = { 'P': 'FU', 'L': 'KY', 'N': 'KE', 'S': 'GI', 'G': 'KI', 'B': 'KA', 'R': 'HI' };
-      if (usi.includes('*')) return { from: null, toR: ranks.indexOf(usi[3]), toC: files.indexOf(usi[2]), drop: tm[usi[0]], promote: false };
-      else return { from: { r: ranks.indexOf(usi[1]), c: files.indexOf(usi[0]) }, toR: ranks.indexOf(usi[3]), toC: files.indexOf(usi[2]), drop: null, promote: usi.endsWith('+') };
+  function inCheck(color) { return isAttacked(kingSq[color], color ^ 1); }
+
+  /* ---------------- 指し手生成 ---------------- */
+  var pawnFileTmp = new Uint8Array(9);
+
+  function genMoves(ply, withDrops) {
+    var list = moveBuf[ply], n = 0;
+    var us = side, them = us ^ 1;
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bd[sq];
+      if (!p || (p >> 4) !== us) continue;
+      var t = p & 15;
+      var canProm = PROM[t] !== 0;
+      var fromZone = us === 0 ? (sq < 27) : (sq >= 54);
+      var steps = STEP_TGT[p][sq], k, to, q;
+      for (k = 0; k < steps.length; k++) {
+        to = steps[k]; q = bd[to];
+        if (q && (q >> 4) === us) continue;
+        n = pushMove(list, n, sq, to, p, t, canProm, fromZone, us, q);
+      }
+      var sd = SLIDE_D[p];
+      for (var di = 0; di < sd.length; di++) {
+        var ray = RAY[sq][sd[di]];
+        for (var i = 0; i < ray.length; i++) {
+          to = ray[i]; q = bd[to];
+          if (q && (q >> 4) === us) break;
+          n = pushMove(list, n, sq, to, p, t, canProm, fromZone, us, q);
+          if (q) break;
+        }
+      }
+    }
+    if (withDrops) {
+      var i2, c2;
+      for (c2 = 0; c2 < 9; c2++) pawnFileTmp[c2] = 0;
+      var myFu = FU | (us << 4);
+      for (i2 = 0; i2 < 81; i2++) if (bd[i2] === myFu) pawnFileTmp[i2 % 9] = 1;
+      for (var hi = 0; hi < 7; hi++) {
+        var ht = HAND_TYPES[hi];
+        if (hd[us * 16 + ht] <= 0) continue;
+        var hp = ht | (us << 4);
+        for (var s2 = 0; s2 < 81; s2++) {
+          if (bd[s2]) continue;
+          var rr = (s2 / 9) | 0;
+          if (ht === FU) {
+            if (pawnFileTmp[s2 % 9]) continue;
+            if (us === 0 ? rr === 0 : rr === 8) continue;
+          } else if (ht === KY) {
+            if (us === 0 ? rr === 0 : rr === 8) continue;
+          } else if (ht === KE) {
+            if (us === 0 ? rr <= 1 : rr >= 7) continue;
+          }
+          list[n++] = mkMove(127, s2, 0, ht, hp, 0);
+        }
+      }
+    }
+    return n;
+  }
+
+  function pushMove(list, n, from, to, p, t, canProm, fromZone, us, q) {
+    var capT = q ? (q & 15) : 0;
+    var toZone = us === 0 ? (to < 27) : (to >= 54);
+    if (canProm && (toZone || fromZone)) {
+      list[n++] = mkMove(from, to, 1, 0, p, capT);
+      /* 歩・角・飛の不成は実戦上ほぼ無意味なので生成しない(枝を削る) */
+      if (t === FU || t === KA || t === HI) return n;
+      var r = (to / 9) | 0;
+      if (t === KY && (us === 0 ? r === 0 : r === 8)) return n;
+      if (t === KE && (us === 0 ? r <= 1 : r >= 7)) return n;
+      list[n++] = mkMove(from, to, 0, 0, p, capT);
+      return n;
+    }
+    list[n++] = mkMove(from, to, 0, 0, p, capT);
+    return n;
+  }
+
+  /* ---------------- Make / Unmake ---------------- */
+  function makeMove(m) {
+    var to = m & 127, from = (m >>> 7) & 127, promo = (m >>> 14) & 1, drop = (m >>> 15) & 15;
+    var us = side, them = us ^ 1;
+    var idx = undoTop++;
+    uKeyLo[idx] = keyLo; uKeyHi[idx] = keyHi;
+    uK0[idx] = kingSq[0]; uK1[idx] = kingSq[1];
+    uMove[idx] = m;
+
+    if (drop) {
+      var dp = drop | (us << 4);
+      bd[to] = dp;
+      keyLo ^= ZPL[dp * 81 + to]; keyHi ^= ZPH[dp * 81 + to];
+      var hix = us * 16 + drop, nn = hd[hix];
+      hd[hix] = nn - 1;
+      keyLo ^= ZHL[hix * 20 + nn]; keyHi ^= ZHH[hix * 20 + nn];
+      uCap[idx] = 0;
+    } else {
+      var p = bd[from];
+      var cap = bd[to];
+      uCap[idx] = cap;
+      if (cap) {
+        keyLo ^= ZPL[cap * 81 + to]; keyHi ^= ZPH[cap * 81 + to];
+        var rt = RAW[cap & 15];
+        var hix2 = us * 16 + rt, n2 = hd[hix2] + 1;
+        hd[hix2] = n2;
+        keyLo ^= ZHL[hix2 * 20 + n2]; keyHi ^= ZHH[hix2 * 20 + n2];
+      }
+      keyLo ^= ZPL[p * 81 + from]; keyHi ^= ZPH[p * 81 + from];
+      bd[from] = 0;
+      var np = promo ? (PROM[p & 15] | (us << 4)) : p;
+      bd[to] = np;
+      keyLo ^= ZPL[np * 81 + to]; keyHi ^= ZPH[np * 81 + to];
+      if ((np & 15) === OU) kingSq[us] = to;
+    }
+    side = them;
+    keyLo ^= ZSL; keyHi ^= ZSH;
+
+    if (isAttacked(kingSq[us], them)) { unmakeMove(); return false; }
+
+    /* 打ち歩詰めの禁止 */
+    if (drop === FU && !uchiGuard) {
+      if (isAttacked(kingSq[them], us)) {
+        if (!hasLegalMove()) { unmakeMove(); return false; }
+      }
+    }
+    return true;
+  }
+
+  function unmakeMove() {
+    var idx = --undoTop;
+    var m = uMove[idx];
+    side ^= 1;
+    var us = side;
+    keyLo = uKeyLo[idx]; keyHi = uKeyHi[idx];
+    kingSq[0] = uK0[idx]; kingSq[1] = uK1[idx];
+    if (m === -1) return;
+    var to = m & 127, from = (m >>> 7) & 127, promo = (m >>> 14) & 1, drop = (m >>> 15) & 15;
+    if (drop) {
+      bd[to] = 0;
+      hd[us * 16 + drop]++;
+    } else {
+      var np = bd[to];
+      var p = promo ? (RAW[np & 15] | (us << 4)) : np;
+      bd[from] = p;
+      var cap = uCap[idx];
+      bd[to] = cap;
+      if (cap) hd[us * 16 + RAW[cap & 15]]--;
+    }
+  }
+
+  function makeNull() {
+    var idx = undoTop++;
+    uKeyLo[idx] = keyLo; uKeyHi[idx] = keyHi;
+    uK0[idx] = kingSq[0]; uK1[idx] = kingSq[1];
+    uMove[idx] = -1; uCap[idx] = 0;
+    side ^= 1; keyLo ^= ZSL; keyHi ^= ZSH;
+  }
+  function unmakeNull() { unmakeMove(); }
+
+  function hasLegalMove() {
+    var g = uchiGuard; uchiGuard = true;
+    var B = MAXPLY - 2;
+    var n = genMoves(B, true), list = moveBuf[B], res = false;
+    for (var i = 0; i < n; i++) {
+      if (makeMove(list[i])) { unmakeMove(); res = true; break; }
+    }
+    uchiGuard = g;
+    return res;
+  }
+
+  function legalMoves() {
+    var out = [];
+    var B = MAXPLY - 6;
+    var n = genMoves(B, true), list = moveBuf[B];
+    for (var i = 0; i < n; i++) {
+      var m = list[i];
+      if (makeMove(m)) { unmakeMove(); out.push(m); }
+    }
+    return out;
+  }
+
+  /* =====================================================================
+     評価関数
+     ===================================================================== */
+  var pawnMask = new Int32Array(2);
+
+  function cheb(a, b) {
+    var ar = (a / 9) | 0, ac = a % 9, br = (b / 9) | 0, bc = b % 9;
+    var dr = ar > br ? ar - br : br - ar;
+    var dc = ac > bc ? ac - bc : bc - ac;
+    return dr > dc ? dr : dc;
+  }
+
+  function shelter(c) {
+    var k = kingSq[c];
+    if (k < 0) return 0;
+    var r = (k / 9) | 0, cc = k % 9, v = 0;
+    for (var d = 0; d < 8; d++) {
+      var nr = r + DR[d], nc = cc + DC[d];
+      if (nr < 0 || nr > 8 || nc < 0 || nc > 8) { v += 8; continue; }
+      var q = bd[nr * 9 + nc];
+      if (!q) continue;
+      if ((q >> 4) === c) {
+        var t = q & 15;
+        if (t === KI || t === TO || t === NY || t === NK || t === NG) v += 24;
+        else if (t === GI) v += 20;
+        else if (t === FU) v += 10;
+        else v += 12;
+      } else v -= 22;
+    }
+    /* 玉頭・隣接筋に自分の歩が無いと弱い */
+    for (var f = cc - 1; f <= cc + 1; f++) {
+      if (f < 0 || f > 8) continue;
+      if (!((pawnMask[c] >> f) & 1)) v -= 22;
+    }
+    /* 囲いの骨格:自陣かつ端寄りに玉が収まっている形を加点 */
+    if (c === 0) {
+      if (r >= 7 && (cc <= 2 || cc >= 6)) v += 28;
+      if (r === 8 && (cc === 0 || cc === 8)) v += 18;
+    } else {
+      if (r <= 1 && (cc <= 2 || cc >= 6)) v += 28;
+      if (r === 0 && (cc === 0 || cc === 8)) v += 18;
+    }
+    return v;
+  }
+
+  function rawEval() {
+    var s = 0;
+    var sk = kingSq[0], gk = kingSq[1];
+    pawnMask[0] = 0; pawnMask[1] = 0;
+    for (var sq = 0; sq < 81; sq++) {
+      var p = bd[sq];
+      if (!p) continue;
+      s += PSTV[p * 81 + sq];
+      var t = p & 15, c = p >> 4, sgn = c === 0 ? 1 : -1;
+      if (t === FU) pawnMask[c] |= 1 << (sq % 9);
+      if (t === KA || t === HI || t === UM || t === RY) {
+        var mob = 0, sd = SLIDE_D[p];
+        for (var k = 0; k < sd.length; k++) {
+          var ray = RAY[sq][sd[k]];
+          for (var i = 0; i < ray.length; i++) {
+            var q = bd[ray[i]];
+            if (q) { if ((q >> 4) !== c) mob++; break; }
+            mob++;
+          }
+        }
+        s += sgn * mob * MOBW[t];
+      }
+      if (t !== OU) {
+        var ek = c === 0 ? gk : sk;
+        if (ek >= 0) {
+          var dd = cheb(sq, ek);
+          if (dd <= 3) s += sgn * ATKW[t] * (4 - dd);
+        }
+      }
+    }
+    for (var col = 0; col < 2; col++) {
+      var sg = col === 0 ? 1 : -1;
+      for (var h = 0; h < 7; h++) {
+        var ht = HAND_TYPES[h], n = hd[col * 16 + ht];
+        if (n) s += sg * n * HANDV[ht];
+      }
+      if (hd[col * 16 + FU] === 0) s -= sg * 40;   /* 歩切れペナルティ */
+    }
+    s += shelter(0) - shelter(1);
+    return s;
+  }
+
+  function evaluate() {
+    var s = rawEval();
+    return side === 0 ? s : -s;
+  }
+
+  /* =====================================================================
+     置換表
+     ===================================================================== */
+  var TT_BITS = 19, TT_SIZE = 1 << TT_BITS, TT_MASK = TT_SIZE - 1;
+  var ttKey = new Int32Array(TT_SIZE);
+  var ttMv = new Int32Array(TT_SIZE);
+  var ttVal = new Int32Array(TT_SIZE);
+  var ttDep = new Int8Array(TT_SIZE);
+  var ttFlg = new Int8Array(TT_SIZE);
+  var ttAge = new Int8Array(TT_SIZE);
+  var ttUsed = new Uint8Array(TT_SIZE);
+  var ttGen = 1;
+
+  var MATE = 30000, INF = 1000000;
+
+  function ttStore(depth, val, flag, mv, ply) {
+    var idx = (keyLo & TT_MASK) >>> 0;
+    if (ttUsed[idx] && ttAge[idx] === ttGen && ttDep[idx] > depth && ttKey[idx] !== keyHi) return;
+    var v = val;
+    if (v > MATE - 1000) v += ply; else if (v < -MATE + 1000) v -= ply;
+    ttKey[idx] = keyHi; ttMv[idx] = mv; ttVal[idx] = v;
+    ttDep[idx] = depth; ttFlg[idx] = flag; ttAge[idx] = ttGen; ttUsed[idx] = 1;
+  }
+
+  /* =====================================================================
+     探索
+     ===================================================================== */
+  var killers = new Int32Array(MAXPLY * 2);
+  var history = new Int32Array(2 * 82 * 81);
+  var pvTable = new Array(MAXPLY);
+  var pvLen = new Int32Array(MAXPLY);
+  (function () { for (var i = 0; i < MAXPLY; i++) pvTable[i] = new Int32Array(MAXPLY); })();
+
+  var nodes = 0, stopTime = 0, stopped = false, startTime = 0;
+
+  function checkTime() { if (Date.now() >= stopTime) stopped = true; }
+
+  function histIndex(m) {
+    var f = (m >>> 7) & 127;
+    if (f === 127) f = 81;
+    return side * 6642 + f * 81 + (m & 127);
+  }
+
+  function isRepetition() {
+    var lim = undoTop - 24; if (lim < 0) lim = 0;
+    for (var i = undoTop - 2; i >= lim; i -= 2) {
+      if (uKeyLo[i] === keyLo && uKeyHi[i] === keyHi) return true;
+    }
+    var cnt = 0;
+    for (var j = ghLen - 1; j >= 0; j--) {
+      if (ghLo[j] === keyLo && ghHi[j] === keyHi) { cnt++; if (cnt >= 2) return true; }
+    }
+    return false;
+  }
+
+  function pickBest(list, sc, n, i) {
+    var b = i;
+    for (var j = i + 1; j < n; j++) if (sc[j] > sc[b]) b = j;
+    if (b !== i) {
+      var tm = list[i]; list[i] = list[b]; list[b] = tm;
+      var ts = sc[i]; sc[i] = sc[b]; sc[b] = ts;
+    }
+    return list[i];
+  }
+
+  /* ---------------- 静止探索 ---------------- */
+  function qsearch(alpha, beta, ply, qd) {
+    nodes++;
+    if ((nodes & 1023) === 0) checkTime();
+    if (stopped) return 0;
+    if (ply >= 66) return evaluate();
+
+    var chk = isAttacked(kingSq[side], side ^ 1);
+    var best;
+    if (!chk) {
+      best = evaluate();
+      if (best >= beta) return best;
+      if (best > alpha) alpha = best;
+    } else {
+      best = -MATE + ply;
     }
 
-    function formatUsiToJapanese(usi, currentBoard, isSente = true) {
-      const m = usiToMove(usi); if (!m) return usi;
-      const fK = ['９','８','７','６','５','４','３','２','１'], rK = ['一','二','三','四','五','六','七','八','九'], mark = isSente ? '▲' : '△';
-      if (m.drop) return `${mark}${fK[m.toC]}${rK[m.toR]}${KANJI[m.drop]}打`;
+    var n = genMoves(ply, chk);
+    var list = moveBuf[ply], sc = scoreBuf[ply];
+    var ek = kingSq[side ^ 1];
+    var cnt = 0, i, m;
+    for (i = 0; i < n; i++) {
+      m = list[i];
+      var capT = (m >>> 24) & 15;
+      var pr = (m >>> 14) & 1;
+      if (!chk) {
+        var quiet = !capT && !pr;
+        if (quiet) {
+          /* 静止探索先頭のみ、敵玉近傍への王手候補を残す */
+          if (qd > 0 || cheb(m & 127, ek) > 2) continue;
+        } else if (capT) {
+          if (best + CAPV[capT] * 2 + 220 < alpha) continue;   /* デルタ枝刈り */
+        }
+      }
+      list[cnt] = m;
+      sc[cnt] = capT ? (200000 + CAPV[capT] * 16 - CAPV[((m >>> 19) & 15)])
+                     : (pr ? 150000 : 0);
+      cnt++;
+    }
+
+    for (i = 0; i < cnt; i++) {
+      m = pickBest(list, sc, cnt, i);
+      var isQuiet = !((m >>> 24) & 15) && !((m >>> 14) & 1);
+      if (!makeMove(m)) continue;
+      if (isQuiet && !chk) {
+        /* 王手でない静かな手は読まない */
+        if (!isAttacked(kingSq[side], side ^ 1)) { unmakeMove(); continue; }
+      }
+      var v = -qsearch(-beta, -alpha, ply + 1, qd + 1);
+      unmakeMove();
+      if (stopped) return 0;
+      if (v > best) {
+        best = v;
+        if (v > alpha) {
+          alpha = v;
+          if (v >= beta) return v;
+        }
+      }
+    }
+    return best;
+  }
+
+  /* ---------------- 主探索 ---------------- */
+  function search(depth, alpha, beta, ply, canNull) {
+    if (stopped) return 0;
+    nodes++;
+    if ((nodes & 1023) === 0) checkTime();
+    pvLen[ply] = 0;
+
+    if (ply > 0 && isRepetition()) return 0;
+    if (ply >= 64) return evaluate();
+
+    var chk = isAttacked(kingSq[side], side ^ 1);
+    if (chk && depth < 32) depth++;                 /* 王手延長 */
+    if (depth <= 0) return qsearch(alpha, beta, ply, 0);
+
+    var idx = (keyLo & TT_MASK) >>> 0;
+    var ttMove = 0;
+    if (ttUsed[idx] && ttKey[idx] === keyHi) {
+      ttMove = ttMv[idx];
+      if (ply > 0 && ttDep[idx] >= depth) {
+        var tv = ttVal[idx];
+        if (tv > MATE - 1000) tv -= ply; else if (tv < -MATE + 1000) tv += ply;
+        var fl = ttFlg[idx];
+        if (fl === 0) return tv;
+        if (fl === 1 && tv >= beta) return tv;
+        if (fl === 2 && tv <= alpha) return tv;
+      }
+    }
+
+    var stat = chk ? -INF : evaluate();
+
+    /* 静的枝刈り(リバースフューティリティ) */
+    if (!chk && ply > 0 && depth <= 3 && beta < MATE - 1000) {
+      if (stat - 220 * depth >= beta) return stat;
+    }
+
+    /* ヌルムーブ */
+    if (canNull && !chk && ply > 0 && depth >= 3 && stat >= beta && beta > -MATE + 1000) {
+      var R = 2 + (depth > 6 ? 1 : 0);
+      makeNull();
+      var nv = -search(depth - 1 - R, -beta, -beta + 1, ply + 1, false);
+      unmakeNull();
+      if (stopped) return 0;
+      if (nv >= beta && nv < MATE - 1000) return beta;
+    }
+
+    var n = genMoves(ply, true);
+    var list = moveBuf[ply], sc = scoreBuf[ply];
+    var k1 = killers[ply * 2], k2 = killers[ply * 2 + 1];
+    var i, m;
+    for (i = 0; i < n; i++) {
+      m = list[i];
+      var s;
+      if (m === ttMove) s = 1 << 28;
       else {
-        const p = currentBoard[m.from.r][m.from.c];
-        return `${mark}${fK[m.toC]}${rK[m.toR]}${p ? KANJI[p.type] : ''}${m.promote ? '成' : ''}`;
+        var capT = (m >>> 24) & 15;
+        if (capT) s = (1 << 24) + CAPV[capT] * 16 - CAPV[(m >>> 19) & 15];
+        else if (m === k1) s = (1 << 23);
+        else if (m === k2) s = (1 << 23) - 1;
+        else {
+          s = history[histIndex(m)];
+          if (s > 1000000) s = 1000000;
+        }
+        if ((m >>> 14) & 1) s += 1 << 20;           /* 成りは優遇 */
+      }
+      sc[i] = s;
+    }
+
+    var best = -INF, bestMove = 0, moveCount = 0, flag = 2;
+    var origAlpha = alpha;
+
+    for (i = 0; i < n; i++) {
+      m = pickBest(list, sc, n, i);
+      var capT2 = (m >>> 24) & 15, pr2 = (m >>> 14) & 1;
+      var quiet = !capT2 && !pr2;
+
+      /* 浅い深さでの前向き枝刈り */
+      if (!chk && quiet && depth <= 2 && moveCount > 0 && best > -MATE + 1000) {
+        if (stat + 150 * depth + 120 < alpha) continue;
+      }
+
+      if (!makeMove(m)) continue;
+      moveCount++;
+      var givesChk = isAttacked(kingSq[side], side ^ 1);
+      var v;
+      var nd = depth - 1;
+
+      if (moveCount === 1) {
+        v = -search(nd, -beta, -alpha, ply + 1, true);
+      } else {
+        var red = 0;
+        if (depth >= 3 && quiet && !givesChk && moveCount > 3) {
+          red = 1;
+          if (moveCount > 8 && depth >= 5) red = 2;
+          if (nd - red < 1) red = nd - 1;
+          if (red < 0) red = 0;
+        }
+        v = -search(nd - red, -alpha - 1, -alpha, ply + 1, true);
+        if (v > alpha && red > 0) v = -search(nd, -alpha - 1, -alpha, ply + 1, true);
+        if (v > alpha && v < beta) v = -search(nd, -beta, -alpha, ply + 1, true);
+      }
+      unmakeMove();
+      if (stopped) return 0;
+
+      if (v > best) {
+        best = v; bestMove = m;
+        if (v > alpha) {
+          alpha = v; flag = 0;
+          pvTable[ply][0] = m;
+          var cl = pvLen[ply + 1];
+          for (var q = 0; q < cl; q++) pvTable[ply][q + 1] = pvTable[ply + 1][q];
+          pvLen[ply] = cl + 1;
+          if (v >= beta) {
+            flag = 1;
+            if (quiet) {
+              if (killers[ply * 2] !== m) {
+                killers[ply * 2 + 1] = killers[ply * 2];
+                killers[ply * 2] = m;
+              }
+              history[histIndex(m)] += depth * depth;
+            }
+            break;
+          }
+        }
       }
     }
 
-    function generateMoveExplanation(move, bestMoveUsi, loss, preBoard, bookComment) {
-      if (bookComment) return bookComment;
-      const movedPiece = move.drop ? { type: move.drop } : preBoard[move.from.r][move.from.c];
-      const targetPiece = preBoard[move.toR][move.toC];
-      const pName = movedPiece ? KANJI[movedPiece.type] : '駒';
-      if (targetPiece) return `相手の ${KANJI[targetPiece.type]} を召し捕る手です。`;
-      if (move.promote) return `敵陣を突破して ${pName} を成ることで攻撃力を高めました。`;
-      if (move.drop) return `持ち駒の ${pName} を要所に打ち込みました。`;
-      return `自然な一手です。`;
+    if (moveCount === 0) return -MATE + ply;    /* 詰み(将棋では手がなければ負け) */
+
+    ttStore(depth, best, flag, bestMove, ply);
+    return best;
+  }
+
+  /* ---------------- 1手詰めルーチン ---------------- */
+  function mateIn1() {
+    var B = MAXPLY - 10;
+    var n = genMoves(B, true), list = moveBuf[B];
+    for (var i = 0; i < n; i++) {
+      var m = list[i];
+      if (!makeMove(m)) continue;
+      if (isAttacked(kingSq[side], side ^ 1)) {
+        if (!hasLegalMove()) { unmakeMove(); return m; }
+      }
+      unmakeMove();
+    }
+    return 0;
+  }
+
+  /* ---------------- ルート探索(反復深化) ---------------- */
+  function think(opts) {
+    opts = opts || {};
+    var timeMs = opts.time || 2000;
+    var maxDepth = opts.maxDepth || 30;
+    startTime = Date.now();
+    stopTime = startTime + timeMs;
+    stopped = false; nodes = 0;
+    ttGen = (ttGen + 1) & 63; if (ttGen === 0) ttGen = 1;
+    killers.fill(0);
+    for (var hh = 0; hh < history.length; hh++) history[hh] = (history[hh] >> 3);
+
+    var mm = mateIn1();
+    if (mm) {
+      return { move: mm, score: MATE - 1, depth: 1, nodes: 1, ms: Date.now() - startTime,
+               pv: [mm], roots: [[mm, MATE - 1]], mate: true };
     }
 
-    function processPlayerMove(move, promote) {
-      isCpuBusy = true;
-      document.getElementById('status-box').textContent = 'AIが深層解析中...';
-      
-      setTimeout(() => {
-        const assistLevel = document.getElementById('assist-level').value;
-        const threshold = ASSIST_THRESHOLDS[assistLevel] || 999999;
-        
-        const preAnalysis = analyzePosition(board, hands, 0, 3);
-        const preScore = preAnalysis.score;
-        const recommendedUsi = preAnalysis.bestMove;
+    var rootMoves = legalMoves();
+    if (rootMoves.length === 0) {
+      return { move: 0, score: -MATE, depth: 0, nodes: 0, ms: 0, pv: [], roots: [], mate: false };
+    }
+    var rn = rootMoves.length;
+    var rmv = new Int32Array(rn), rsc = new Int32Array(rn), i;
+    for (i = 0; i < rn; i++) { rmv[i] = rootMoves[i]; rsc[i] = -INF; }
 
-        const simB = JSON.parse(JSON.stringify(board)), simH = JSON.parse(JSON.stringify(hands));
-        executeMoveOnBoard(simB, simH, 0, move.from, move.drop, move.toR, move.toC, promote);
-        const postAnalysis = analyzePosition(simB, simH, 1, 3);
-        const postScore = postAnalysis.score;
-        const loss = preScore - postScore;
+    if (rn === 1) {
+      return { move: rmv[0], score: 0, depth: 1, nodes: 1, ms: Date.now() - startTime,
+               pv: [rmv[0]], roots: [[rmv[0], 0]], mate: false };
+    }
 
-        currentEvalScore = postScore;
-        document.getElementById('eval-display').textContent = `評価値: ${currentEvalScore > 0 ? '+' + currentEvalScore : currentEvalScore}`;
+    var bestMove = rmv[0], bestScore = 0, bestDepth = 0, bestPV = [rmv[0]];
+    var prevScore = new Int32Array(rn);
 
-        if (assistLevel !== 'off' && !preAnalysis.isBook && loss >= threshold && postAnalysis.bestObj) {
-          pendingPunish = postAnalysis.bestObj;
-          saveHistory();
-          executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
-          lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
-          updateDisplay();
+    for (var d = 1; d <= maxDepth; d++) {
+      var alpha = -INF, beta = INF;
+      var iterBest = 0, iterScore = -INF, iterPV = null;
+      var done = 0;
 
-          const lNames = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
-          document.getElementById('brake-score-badge').textContent = `評価値落差 −${Math.round(loss)}点`;
-          document.getElementById('brake-msg').textContent = `【${lNames[assistLevel]}基準】厳しい反撃を突かれ、形勢を損ねてしまいます。`;
-          document.getElementById('brake-modal').style.display = 'block';
-          updateCoachCard('badge-bad', '⚠️ 悪手警告', `最善手は ${formatUsiToJapanese(recommendedUsi, board, true)} でした。`, preAnalysis.pv);
+      /* 前回の評価順に並べ替え */
+      if (d > 1) {
+        for (i = 0; i < rn; i++) {
+          var bi = i;
+          for (var j = i + 1; j < rn; j++) if (prevScore[j] > prevScore[bi]) bi = j;
+          if (bi !== i) {
+            var tv = rmv[i]; rmv[i] = rmv[bi]; rmv[bi] = tv;
+            var ts = prevScore[i]; prevScore[i] = prevScore[bi]; prevScore[bi] = ts;
+          }
+        }
+      }
+
+      for (i = 0; i < rn; i++) {
+        var m = rmv[i];
+        if (!makeMove(m)) continue;
+        var v;
+        if (i === 0) v = -search(d - 1, -beta, -alpha, 1, true);
+        else {
+          v = -search(d - 1, -alpha - 1, -alpha, 1, true);
+          if (v > alpha && !stopped) v = -search(d - 1, -beta, -alpha, 1, true);
+        }
+        unmakeMove();
+        if (stopped) break;
+        done++;
+        rsc[i] = v;
+        if (v > iterScore) {
+          iterScore = v; iterBest = m;
+          var pv = [m], cl = pvLen[1];
+          for (var q = 0; q < cl && q < 24; q++) pv.push(pvTable[1][q]);
+          iterPV = pv;
+          if (v > alpha) alpha = v;
+        }
+      }
+
+      if (done > 0 && iterBest) {
+        bestMove = iterBest; bestScore = iterScore; bestDepth = d;
+        if (iterPV) bestPV = iterPV;
+        for (i = 0; i < rn; i++) prevScore[i] = (rsc[i] === -INF ? -INF + 1 : rsc[i]);
+      }
+      if (stopped) break;
+      if (bestScore > MATE - 200 || bestScore < -MATE + 200) break;
+      if (Date.now() - startTime > timeMs * 0.62) break;
+    }
+
+    var roots = [];
+    for (i = 0; i < rn; i++) if (prevScore[i] > -INF + 1) roots.push([rmv[i], prevScore[i]]);
+    roots.sort(function (a, b) { return b[1] - a[1]; });
+    if (roots.length === 0) roots = [[bestMove, bestScore]];
+
+    return {
+      move: bestMove, score: bestScore, depth: bestDepth, nodes: nodes,
+      ms: Date.now() - startTime, pv: bestPV, roots: roots.slice(0, 24),
+      mate: bestScore > MATE - 200
+    };
+  }
+
+  /* =====================================================================
+     公開API
+     ===================================================================== */
+  var FILES = ['9', '8', '7', '6', '5', '4', '3', '2', '1'];
+  var RANKS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+  var USI_LETTER = {}; USI_LETTER[FU] = 'P'; USI_LETTER[KY] = 'L'; USI_LETTER[KE] = 'N';
+  USI_LETTER[GI] = 'S'; USI_LETTER[KI] = 'G'; USI_LETTER[KA] = 'B'; USI_LETTER[HI] = 'R';
+
+  function toUsi(m) {
+    if (!m) return '';
+    var to = m & 127, from = (m >>> 7) & 127, promo = (m >>> 14) & 1, drop = (m >>> 15) & 15;
+    if (drop) return USI_LETTER[drop] + '*' + FILES[to % 9] + RANKS[(to / 9) | 0];
+    return FILES[from % 9] + RANKS[(from / 9) | 0] + FILES[to % 9] + RANKS[(to / 9) | 0] + (promo ? '+' : '');
+  }
+
+  function decode(m) {
+    if (!m) return null;
+    var to = m & 127, from = (m >>> 7) & 127;
+    return {
+      raw: m,
+      to: to, toR: (to / 9) | 0, toC: to % 9,
+      from: from === 127 ? -1 : from,
+      fromR: from === 127 ? -1 : ((from / 9) | 0),
+      fromC: from === 127 ? -1 : (from % 9),
+      promote: ((m >>> 14) & 1) === 1,
+      drop: (m >>> 15) & 15,
+      piece: (m >>> 19) & 31,
+      pieceType: ((m >>> 19) & 31) & 15,
+      capType: (m >>> 24) & 15,
+      usi: toUsi(m)
+    };
+  }
+
+  function exportState(dst) {
+    for (var i = 0; i < 81; i++) dst.bd[i] = bd[i];
+    for (var j = 0; j < 32; j++) dst.hd[j] = hd[j];
+    dst.side = side;
+    dst.keyLo = keyLo; dst.keyHi = keyHi;
+  }
+
+  function playMove(m) {
+    var ok = makeMove(m);
+    if (ok) undoTop = 0;
+    return ok;
+  }
+
+  function clearTT() { ttUsed.fill(0); ttGen = 1; }
+
+  return {
+    FU: FU, KY: KY, KE: KE, GI: GI, KI: KI, KA: KA, HI: HI, OU: OU,
+    TO: TO, NY: NY, NK: NK, NG: NG, UM: UM, RY: RY,
+    HAND_TYPES: HAND_TYPES, PROM: PROM, RAW: RAW, MAT: MAT, MATE: MATE,
+    setPosition: setPosition,
+    initialPosition: initialPosition,
+    exportState: exportState,
+    legalMoves: legalMoves,
+    hasLegalMove: hasLegalMove,
+    inCheck: inCheck,
+    isAttacked: isAttacked,
+    playMove: playMove,
+    makeMove: makeMove,
+    unmakeMove: unmakeMove,
+    think: think,
+    mateIn1: mateIn1,
+    evaluate: function () { return rawEval(); },
+    decode: decode,
+    toUsi: toUsi,
+    clearTT: clearTT,
+    key: function () { return [keyLo, keyHi]; },
+    boardRef: function () { return bd; },
+    handRef: function () { return hd; },
+    sideRef: function () { return side; },
+    _perft: function (d) {
+      if (d === 0) return 1;
+      var B = 40 + d;
+      var n = genMoves(B, true), list = moveBuf[B], sum = 0;
+      var arr = new Int32Array(n);
+      for (var i = 0; i < n; i++) arr[i] = list[i];
+      for (var i2 = 0; i2 < n; i2++) {
+        if (makeMove(arr[i2])) { sum += this._perft(d - 1); unmakeMove(); }
+      }
+      return sum;
+    }
+  };
+})();
+    </script>
+
+  <script>
+
+/* =========================================================================
+   UI レイヤー
+   ========================================================================= */
+(function () {
+  'use strict';
+
+  var KANJI = { 1: '歩', 2: '香', 3: '桂', 4: '銀', 5: '金', 6: '角', 7: '飛', 8: '玉',
+                9: 'と', 10: '杏', 11: '圭', 12: '全', 14: '馬', 15: '竜' };
+  var HAND_ORDER = [7, 6, 5, 4, 3, 2, 1];   /* 飛角金銀桂香歩 */
+  var FILE_KANJI = ['９', '８', '７', '６', '５', '４', '３', '２', '１'];
+  var RANK_KANJI = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+  var ASSIST_THRESHOLDS = { '10k': 650, '5k': 380, '1d': 200, '3d': 110, 'off': 999999 };
+  var ASSIST_NAMES = { '10k': 'アマ10級', '5k': 'アマ5級', '1d': 'アマ初段', '3d': 'アマ三段' };
+
+  /* 相手レベル:探索そのものは常に本格的に行い、指し手の選択で強さを調整する */
+  var LEVELS = {
+    1: { time: 500,  margin: 700, blunderRate: 0.35, name: '初級' },
+    2: { time: 900,  margin: 220, blunderRate: 0.08, name: '中級' },
+    3: { time: 2200, margin: 0,   blunderRate: 0,    name: '上級' },
+    4: { time: 4500, margin: 0,   blunderRate: 0,    name: '最強' }
+  };
+
+  var OPENING_BOOK = {
+    "": { move: "7g7f", comment: "角道を開け、主導権を握る現代将棋の標準的な初手です。" },
+    "7g7f": { move: "3c3d", comment: "お互いに角道を開け、本格的な駒組みを目指す定番の応手です。" },
+    "7g7f 3c3d": { move: "2g2f", comment: "飛車先の歩を突き、先手から主導権を握りに行く居飛車の代表的な手です。" },
+    "7g7f 3c3d 2g2f": { move: "8c8d", comment: "こちらも飛車先を突き返し、相居飛車の力戦を志向する堂々の一手です。" },
+    "7g7f 3c3d 2g2f 8c8d": { move: "2f2e", comment: "飛車先をさらに伸ばして相手の陣形を圧迫します。" },
+    "7g7f 3c3d 2g2f 8c8d 2f2e": { move: "8d8e", comment: "お互いに飛車先を伸ばし合い、緊張感が高まる局面です。" },
+    "7g7f 8c8d": { move: "2g2f", comment: "相手の飛車先に対し、こちらも飛車先を伸ばして対抗します。" },
+    "2g2f": { move: "3c3d", comment: "角道を開けて自由度を高める柔軟な応手です。" },
+    "2g2f 3c3d": { move: "7g7f", comment: "角道を開け、駒組みの幅を広げます。" }
+  };
+
+  /* ---------------- 対局状態 ---------------- */
+  var G = { bd: new Int8Array(81), hd: new Int32Array(32), side: 0, keyLo: 0, keyHi: 0 };
+  var histKeys = [];        /* [lo,hi,lo,hi,...] 過去局面のハッシュ */
+  var usiHistory = [];
+  var undoStack = [];
+  var legalList = [];       /* 現在の手番の合法手(decode済み) */
+  var selFrom = -1, selDrop = 0, targets = [];
+  var busy = false, lastMove = null, pendingPunish = 0, pendingPromo = null;
+  var currentEval = 0, gameOver = false;
+
+  /* ---------------- Worker ---------------- */
+  var worker = null, workerReady = false, reqSeq = 0, pendings = {};
+
+  var WORKER_GLUE = [
+    'self.onmessage = function (e) {',
+    '  var d = e.data;',
+    '  if (d.cmd === "go") {',
+    '    SG.setPosition(d.bd, d.hd, d.side, d.keys);',
+    '    var r = SG.think(d.opts);',
+    '    r.id = d.id;',
+    '    self.postMessage(r);',
+    '  } else if (d.cmd === "reset") { SG.clearTT(); }',
+    '};',
+    'self.postMessage({ ready: true });'
+  ].join('\n');
+
+  function initWorker() {
+    try {
+      var srcEl = document.getElementById('engine-src');
+      var src = srcEl.textContent + '\n' + WORKER_GLUE;
+      var url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      var w = new Worker(url);
+      w.onmessage = function (e) {
+        var d = e.data;
+        if (d && d.ready) {
+          workerReady = true;
+          setEngineLabel('内蔵思考エンジン Kirin：並列稼働中');
           return;
         }
-
-        const playerUsi = moveToUsi(move, promote);
-        const moveExp = generateMoveExplanation(move, recommendedUsi, loss, board, preAnalysis.isBook ? preAnalysis.comment : null);
-        const playerJp = formatUsiToJapanese(playerUsi, board, true);
-        const bestJp = formatUsiToJapanese(recommendedUsi, board, true);
-
-        if (preAnalysis.isBook || playerUsi === recommendedUsi || loss <= 35) updateCoachCard('badge-good', '🌟 好手・定跡手！', `${playerJp} はAI第一推奨です！ ${moveExp}`, preAnalysis.pv);
-        else if (loss <= 130) updateCoachCard('badge-ok', '👍 合格手', `${playerJp} は手堅い一手です。（AI最善手は ${bestJp}）`, preAnalysis.pv);
-        else updateCoachCard('badge-warn', '⚡ 緩手（少し疑問）', `${playerJp} で少し形勢を損ねました。AIは ${bestJp} を推奨していました。`, preAnalysis.pv);
-
-        saveHistory(); usiHistory.push(playerUsi);
-        executeMoveOnBoard(board, hands, 0, move.from, move.drop, move.toR, move.toC, promote);
-        lastMove = { fromR: move.from ? move.from.r : null, fromC: move.from ? move.from.c : null, toR: move.toR, toC: move.toC };
-        selectedSquare = null; selectedDrop = null; legalMoves = []; updateDisplay();
-        passTurnToCpu();
-      }, 50);
+        var cb = pendings[d.id];
+        if (cb) { delete pendings[d.id]; cb(d); }
+      };
+      w.onerror = function () { killWorker(); };
+      worker = w;
+      setTimeout(function () { if (!workerReady) killWorker(); }, 4000);
+    } catch (err) {
+      worker = null;
+      setEngineLabel('内蔵思考エンジン Kirin：同期モード');
     }
+  }
 
-    function updateCoachCard(badgeClass, badgeText, bodyText, pvArray) {
-      const badgeEl = document.getElementById('coach-badge');
-      badgeEl.className = `coach-badge ${badgeClass}`; badgeEl.textContent = badgeText;
-      document.getElementById('coach-body').textContent = bodyText;
-      const pvEl = document.getElementById('coach-pv');
-      if (pvArray && pvArray.length > 0) {
-        pvEl.textContent = '推奨手: ' + formatUsiToJapanese(pvArray[0], board, true);
-        pvEl.style.display = 'block';
-      } else pvEl.style.display = 'none';
-    }
+  function killWorker() {
+    if (worker) { try { worker.terminate(); } catch (e) {} }
+    worker = null; workerReady = false;
+    setEngineLabel('内蔵思考エンジン Kirin：同期モード');
+    var ind = document.getElementById('engine-indicator');
+    if (ind) ind.style.background = '#f59f00';
+  }
 
-    function showWhyBlunder() {
-      document.getElementById('brake-modal').style.display = 'none';
-      if (!pendingPunish) { undoMove(); return; }
-      isCpuBusy = true;
-      const p = pendingPunish;
-      updateDisplay(p.from ? { r: p.from.r, c: p.from.c } : null, { r: p.toR, c: p.toC });
-      document.getElementById('status-box').textContent = '⚠️ AIの推奨反撃手順を再生中...';
-      setTimeout(() => {
-        executeMoveOnBoard(board, hands, 1, p.from, p.drop, p.toR, p.toC, p.promote);
-        updateDisplay();
-        document.getElementById('status-box').textContent = '💥 相手に厳しい手を突かれてしまいました！';
-        setTimeout(() => {
-          undoMove();
-          document.getElementById('status-box').textContent = '手を巻き戻しました。安全な手を選び直しましょう！';
-        }, 1800);
-      }, 1000);
-    }
+  function setEngineLabel(txt) { document.getElementById('engine-label').textContent = txt; }
 
-    function undoMove() {
-      if (moveHistory.length > 0) {
-        const prev = moveHistory.pop(); usiHistory.pop();
-        board = JSON.parse(prev.board); hands = JSON.parse(prev.hands);
-        lastMove = prev.lastMove ? JSON.parse(prev.lastMove) : null; turn = 0;
+  function engineThink(bdArr, hdArr, stm, keys, opts) {
+    return new Promise(function (resolve) {
+      function runHere() {
+        /* 同期モードは画面が固まりすぎないよう思考時間を抑える */
+        var o = { time: Math.min(opts.time, 1500), maxDepth: opts.maxDepth || 30 };
+        setTimeout(function () {
+          SG.setPosition(bdArr, hdArr, stm, keys);
+          resolve(SG.think(o));
+        }, 30);
       }
-      isCpuBusy = false; pendingPunish = null; document.getElementById('brake-modal').style.display = 'none'; updateDisplay();
-    }
+      if (worker && workerReady) {
+        var id = ++reqSeq;
+        var done = false;
+        pendings[id] = function (r) { if (!done) { done = true; resolve(r); } };
+        /* Workerが応答しない場合の保険 */
+        setTimeout(function () {
+          if (done || !pendings[id]) return;
+          delete pendings[id];
+          killWorker();
+          runHere();
+        }, opts.time + 10000);
+        worker.postMessage({
+          cmd: 'go', id: id,
+          bd: Array.prototype.slice.call(bdArr),
+          hd: Array.prototype.slice.call(hdArr),
+          side: stm, keys: keys.slice(), opts: opts
+        });
+      } else {
+        runHere();
+      }
+    });
+  }
 
-    function continueMove() {
-      document.getElementById('brake-modal').style.display = 'none'; isCpuBusy = false; pendingPunish = null;
-      document.getElementById('status-box').textContent = 'そのまま続行します。'; passTurnToCpu();
-    }
-    function undoSingleMove() {
-      if (isCpuBusy || moveHistory.length === 0) return; undoMove();
-      document.getElementById('status-box').textContent = '1手前の状態に戻しました';
-    }
-    function saveHistory() { moveHistory.push({ board: JSON.stringify(board), hands: JSON.stringify(hands), lastMove: lastMove ? JSON.stringify(lastMove) : null }); }
+  /* ---------------- 補助 ---------------- */
+  function syncEngine() { SG.setPosition(G.bd, G.hd, G.side, histKeys); }
 
-    function passTurnToCpu() {
-      turn = 1; isCpuBusy = true;
-      document.getElementById('status-box').textContent = '相手（CPU）が思考中...';
-      
-      setTimeout(() => {
-        const cpuLegal = getStrictLegalMoves(board, hands, 1);
-        if (cpuLegal.length === 0) {
-          if (isKingInCheck(board, 1)) alert('お見事！詰みです。あなたの勝ちです！'); else alert('引き分けです。');
-          isCpuBusy = false; return;
-        }
+  function refreshLegal() {
+    syncEngine();
+    var raw = SG.legalMoves();
+    legalList = [];
+    for (var i = 0; i < raw.length; i++) legalList.push(SG.decode(raw[i]));
+  }
 
-        const cpuLevel = parseInt(document.getElementById('cpu-level').value, 10);
-        let selectedMove = null;
-        if (cpuLevel === 1) {
-          const captures = cpuLegal.filter(m => board[m.toR][m.toC] && board[m.toR][m.toC].color === 0);
-          selectedMove = captures.length > 0 && Math.random() < 0.3 ? captures[Math.floor(Math.random() * captures.length)] : cpuLegal[Math.floor(Math.random() * cpuLegal.length)];
-        } else {
-          const depth = cpuLevel === 3 ? 3 : 2;
-          const analysis = analyzePosition(board, hands, 1, depth);
-          if (analysis.bestObj) {
-            selectedMove = cpuLegal.find(m => (m.drop ? (m.drop === analysis.bestObj.drop && m.toR === analysis.bestObj.toR && m.toC === analysis.bestObj.toC) : (m.from && m.from.r === analysis.bestObj.from.r && m.from.c === analysis.bestObj.from.c && m.toR === analysis.bestObj.toR && m.toC === analysis.bestObj.toC)));
-            if (selectedMove) selectedMove.promote = analysis.bestObj.promote;
-          }
-        }
-        if (!selectedMove) selectedMove = cpuLegal[0];
-        selectedMove.promote = selectedMove.promote || (!selectedMove.drop && (selectedMove.toR >= 6 || (selectedMove.from && selectedMove.from.r >= 6)));
+  function applyMoveToState(m) {
+    histKeys.push(G.keyLo, G.keyHi);
+    syncEngine();
+    SG.playMove(m);
+    SG.exportState(G);
+    var d = SG.decode(m);
+    lastMove = { fromR: d.fromR, fromC: d.fromC, toR: d.toR, toC: d.toC };
+    usiHistory.push(d.usi);
+  }
 
-        usiHistory.push(moveToUsi(selectedMove, selectedMove.promote));
-        executeMoveOnBoard(board, hands, 1, selectedMove.from, selectedMove.drop, selectedMove.toR, selectedMove.toC, selectedMove.promote);
-        lastMove = { fromR: selectedMove.from ? selectedMove.from.r : null, fromC: selectedMove.from ? selectedMove.from.c : null, toR: selectedMove.toR, toC: selectedMove.toC };
+  function simulateMove(m) {
+    var t = { bd: new Int8Array(81), hd: new Int32Array(32), side: 0, keyLo: 0, keyHi: 0 };
+    syncEngine();
+    SG.playMove(m);
+    SG.exportState(t);
+    syncEngine();
+    return t;
+  }
 
-        turn = 0; isCpuBusy = false;
-        if (getStrictLegalMoves(board, hands, 0).length === 0) { alert(isKingInCheck(board, 0) ? '詰みです...あなたの負けです。' : '指し手がありません（引き分け）。'); return; }
-        document.getElementById('status-box').textContent = 'あなたの番です'; updateDisplay();
-      }, 250);
-    }
+  function snapshot() {
+    undoStack.push({
+      bd: G.bd.slice(), hd: G.hd.slice(), side: G.side,
+      keyLo: G.keyLo, keyHi: G.keyHi,
+      lastMove: lastMove ? { fromR: lastMove.fromR, fromC: lastMove.fromC, toR: lastMove.toR, toC: lastMove.toC } : null,
+      usiLen: usiHistory.length, histLen: histKeys.length, evalScore: currentEval
+    });
+    if (undoStack.length > 400) undoStack.shift();
+  }
 
-    function executeMoveOnBoard(b, h, color, from, drop, toR, toC, promote) {
-      if (drop) { b[toR][toC] = { type: drop, color: color }; h[color][drop]--; }
-      else {
-        const piece = b[from.r][from.c], dest = b[toR][toC];
-        if (dest) { const raw = RAW_MAP[dest.type] || dest.type; h[color][raw] = (h[color][raw] || 0) + 1; }
-        b[toR][toC] = { type: promote && PROMOTE_MAP[piece.type] ? PROMOTE_MAP[piece.type] : piece.type, color: color };
-        b[from.r][from.c] = null;
+  function restoreSnapshot() {
+    if (!undoStack.length) return false;
+    var s = undoStack.pop();
+    G.bd.set(s.bd); G.hd.set(s.hd); G.side = s.side;
+    G.keyLo = s.keyLo; G.keyHi = s.keyHi;
+    lastMove = s.lastMove;
+    usiHistory.length = s.usiLen;
+    histKeys.length = s.histLen;
+    currentEval = s.evalScore;
+    gameOver = false;
+    return true;
+  }
+
+  /* ---------------- 表記 ---------------- */
+  function formatJp(m, isSente) {
+    if (!m) return '－';
+    var d = SG.decode(m);
+    var mark = isSente ? '▲' : '△';
+    if (d.drop) return mark + FILE_KANJI[d.toC] + RANK_KANJI[d.toR] + KANJI[d.drop] + '打';
+    var name = KANJI[d.pieceType] || '駒';
+    return mark + FILE_KANJI[d.toC] + RANK_KANJI[d.toR] + name + (d.promote ? '成' : '');
+  }
+
+  function formatScore(sc) {
+    if (sc > SG.MATE - 1000) return '詰み';
+    if (sc < -SG.MATE + 1000) return '被詰み';
+    return (sc > 0 ? '+' : '') + Math.round(sc);
+  }
+
+  /* ---------------- 描画 ---------------- */
+  function buildBoardDOM() {
+    var el = document.getElementById('board');
+    el.innerHTML = '';
+    for (var r = 0; r < 9; r++) {
+      for (var c = 0; c < 9; c++) {
+        var cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.dataset.r = r; cell.dataset.c = c;
+        el.appendChild(cell);
       }
     }
+    el.onclick = onBoardClick;
+  }
 
-    function getStrictLegalMoves(b, h, color) {
-      const candidates = getCandidateMoves(b, h, color), legal = [];
-      for (const m of candidates) {
-        const simB = JSON.parse(JSON.stringify(b)), simH = JSON.parse(JSON.stringify(h));
-        executeMoveOnBoard(simB, simH, color, m.from, m.drop, m.toR, m.toC, false);
-        if (!isKingInCheck(simB, color)) legal.push(m);
-      }
-      return legal;
-    }
-
-    function isKingInCheck(b, color) {
-      let kr = -1, kc = -1;
-      for (let r = 0; r < 9; r++) { for (let c = 0; c < 9; c++) { const p = b[r][c]; if (p && p.color === color && p.type === 'OU') { kr = r; kc = c; break; } } if (kr !== -1) break; }
-      if (kr === -1) return true;
-      return isSquareAttacked(b, kr, kc, 1 - color);
-    }
-
-    function isSquareAttacked(b, r, c, byColor) {
-      for (let tr = 0; tr < 9; tr++) { for (let tc = 0; tc < 9; tc++) { const p = b[tr][tc]; if (p && p.color === byColor) { const targets = getRawPieceMoves(b, tr, tc); if (targets.some(t => t.r === r && t.c === c)) return true; } } }
-      return false;
-    }
-
-    function getCandidateMoves(b, h, color) {
-      const list = [];
-      for (let r = 0; r < 9; r++) { for (let c = 0; c < 9; c++) { const p = b[r][c]; if (p && p.color === color) { getRawPieceMoves(b, r, c).forEach(t => list.push({ from: { r, c }, toR: t.r, toC: t.c, drop: null })); } } }
-      HAND_ORDER.forEach(type => {
-        if (h[color][type] > 0) {
-          for (let r = 0; r < 9; r++) {
-            for (let c = 0; c < 9; c++) {
-              if (!b[r][c]) {
-                if (type === 'FU') { let hasFu = false; for (let tr = 0; tr < 9; tr++) { const checkP = b[tr][c]; if (checkP && checkP.color === color && checkP.type === 'FU') { hasFu = true; break; } } if (hasFu) continue; }
-                if ((type === 'FU' || type === 'KY') && ((color === 0 && r === 0) || (color === 1 && r === 8))) continue;
-                if (type === 'KE' && ((color === 0 && r <= 1) || (color === 1 && r >= 7))) continue;
-                list.push({ from: null, toR: r, toC: c, drop: type });
-              }
-            }
-          }
+  function render(hlAttacker, hlTarget) {
+    syncEngine();
+    var senteCheck = SG.inCheck(0);
+    var goteCheck = SG.inCheck(1);
+    var cells = document.querySelectorAll('#board .cell');
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var r = +cell.dataset.r, c = +cell.dataset.c, sq = r * 9 + c;
+      var p = G.bd[sq];
+      cell.className = 'cell';
+      cell.textContent = p ? (KANJI[p & 15] || '') : '';
+      if (p) {
+        cell.classList.add((p >> 4) === 1 ? 'gote' : 'sente');
+        if ((p & 15) === 8) {
+          if ((p >> 4) === 0 && senteCheck) cell.classList.add('in-check');
+          if ((p >> 4) === 1 && goteCheck) cell.classList.add('in-check');
         }
+      }
+      if (lastMove) {
+        if (lastMove.fromR === r && lastMove.fromC === c) cell.classList.add('last-move-from');
+        else if (lastMove.toR === r && lastMove.toC === c) cell.classList.add('last-move-to');
+      }
+      if (selFrom === sq) cell.classList.add('selected');
+      for (var t = 0; t < targets.length; t++) {
+        if (targets[t].to === sq) { cell.classList.add('movable'); break; }
+      }
+      if (hlAttacker && hlAttacker.r === r && hlAttacker.c === c) cell.classList.add('punish-attacker');
+      if (hlTarget && hlTarget.r === r && hlTarget.c === c) cell.classList.add('punish-target');
+    }
+    renderStand('sente-stand', 0);
+    renderStand('gote-stand', 1);
+    document.getElementById('eval-display').textContent = '評価値: ' + formatScore(currentEval);
+  }
+
+  function renderStand(elId, color) {
+    var el = document.getElementById(elId);
+    el.innerHTML = '';
+    var any = false;
+    for (var i = 0; i < HAND_ORDER.length; i++) {
+      var t = HAND_ORDER[i], n = G.hd[color * 16 + t] || 0;
+      if (n <= 0) continue;
+      any = true;
+      var chip = document.createElement('div');
+      chip.className = 'stand-piece';
+      chip.textContent = KANJI[t] + (n > 1 ? '×' + n : '');
+      if (color === 0 && selDrop === t) chip.classList.add('selected');
+      if (color === 0 && !busy && !gameOver && G.side === 0) {
+        (function (tt) { chip.onclick = function () { onSelectDrop(tt); }; })(t);
+      }
+      el.appendChild(chip);
+    }
+    if (!any) el.textContent = 'なし';
+  }
+
+  function status(txt) { document.getElementById('status-box').textContent = txt; }
+
+  function setCoach(badgeClass, badgeText, body, pvArr, isSentePV) {
+    var b = document.getElementById('coach-badge');
+    b.className = 'coach-badge ' + badgeClass;
+    b.textContent = badgeText;
+    document.getElementById('coach-body').textContent = body;
+    var pvEl = document.getElementById('coach-pv');
+    if (pvArr && pvArr.length) {
+      var parts = [], sente = isSentePV !== false;
+      for (var i = 0; i < pvArr.length && i < 8; i++) {
+        parts.push(formatJp(pvArr[i], sente));
+        sente = !sente;
+      }
+      pvEl.textContent = 'AI推奨の読み筋: ' + parts.join(' ');
+      pvEl.style.display = 'block';
+    } else pvEl.style.display = 'none';
+  }
+
+  function setEngineInfo(r) {
+    var el = document.getElementById('engine-info');
+    if (!el) return;
+    if (!r) { el.textContent = ''; return; }
+    var nps = r.ms > 0 ? Math.round(r.nodes / r.ms) : 0;
+    el.textContent = '深さ' + r.depth + ' / ' + (r.nodes / 1000).toFixed(0) + 'k局面 / ' + nps + 'kNPS';
+  }
+
+  /* ---------------- 入力 ---------------- */
+  function onBoardClick(e) {
+    if (busy || gameOver || G.side !== 0) return;
+    var cell = e.target.closest ? e.target.closest('.cell') : null;
+    if (!cell) return;
+    onCellClick(+cell.dataset.r, +cell.dataset.c);
+  }
+
+  function onSelectDrop(t) {
+    if (selDrop === t) { selDrop = 0; targets = []; render(); return; }
+    selFrom = -1; selDrop = t;
+    targets = legalList.filter(function (m) { return m.drop === t; });
+    render();
+  }
+
+  function onCellClick(r, c) {
+    var sq = r * 9 + c;
+    var hits = targets.filter(function (m) { return m.to === sq; });
+    if (hits.length) {
+      var promoMove = null, plainMove = null;
+      for (var i = 0; i < hits.length; i++) {
+        if (hits[i].promote) promoMove = hits[i]; else plainMove = hits[i];
+      }
+      if (promoMove && plainMove) {
+        busy = true;
+        pendingPromo = { promo: promoMove.raw, plain: plainMove.raw };
+        document.getElementById('promote-modal').style.display = 'block';
+        return;
+      }
+      playPlayerMove((promoMove || plainMove).raw);
+      return;
+    }
+    var p = G.bd[sq];
+    if (p && (p >> 4) === 0) {
+      selDrop = 0; selFrom = sq;
+      targets = legalList.filter(function (m) { return m.from === sq; });
+    } else {
+      selFrom = -1; selDrop = 0; targets = [];
+    }
+    render();
+  }
+
+  window.finishPromotion = function (promote) {
+    document.getElementById('promote-modal').style.display = 'none';
+    if (!pendingPromo) { busy = false; return; }
+    var m = promote ? pendingPromo.promo : pendingPromo.plain;
+    pendingPromo = null;
+    busy = false;
+    playPlayerMove(m);
+  };
+
+  /* ---------------- 対局の進行 ---------------- */
+  function playPlayerMove(m) {
+    if (busy || gameOver) return;
+    busy = true;
+    selFrom = -1; selDrop = 0; targets = [];
+    render();
+    status('AIが解析しています…');
+    setTimeout(function () { runPlayerMove(m); }, 20);
+  }
+
+  function runPlayerMove(m) {
+    var assist = document.getElementById('assist-level').value;
+    var threshold = ASSIST_THRESHOLDS[assist] || 999999;
+    var level = parseInt(document.getElementById('cpu-level').value, 10) || 3;
+    var cfg = LEVELS[level] || LEVELS[3];
+    var bookKey = usiHistory.join(' ');
+    var bookEntry = OPENING_BOOK[bookKey] || null;
+
+    var preTime = assist === 'off' ? 350 : 800;
+    var preKeys = histKeys.slice();
+
+    engineThink(G.bd, G.hd, 0, preKeys, { time: preTime, maxDepth: 30 }).then(function (pre) {
+      var preScore = pre.score;              /* 先手番なので先手視点 */
+      var recommended = pre.move;
+
+      var after = simulateMove(m);
+      var afterKeys = preKeys.concat([G.keyLo, G.keyHi]);
+
+      return engineThink(after.bd, after.hd, 1, afterKeys,
+        { time: cfg.time, maxDepth: 30 }).then(function (post) {
+        finishPlayerMove(m, pre, post, preScore, recommended, assist, threshold, cfg, bookEntry);
       });
-      return list;
+    });
+  }
+
+  function finishPlayerMove(m, pre, post, preScore, recommended, assist, threshold, cfg, bookEntry) {
+    var postScore = -post.score;             /* 後手番の評価を先手視点へ */
+    var loss = preScore - postScore;
+    currentEval = postScore;
+    setEngineInfo(post);
+
+    var playerJp = formatJp(m, true);
+    var bestJp = formatJp(recommended, true);
+    var isBook = !!(bookEntry && bookEntry.move === SG.decode(m).usi);
+
+    /* 相手に手が無ければ勝ち */
+    var afterState = simulateMove(m);
+    SG.setPosition(afterState.bd, afterState.hd, 1, []);
+    var goteHasMove = SG.hasLegalMove();
+    var goteInCheck = SG.inCheck(1);
+    syncEngine();
+
+    if (!goteHasMove) {
+      snapshot();
+      applyMoveToState(m);
+      refreshLegal();
+      render();
+      gameOver = true; busy = false;
+      setCoach('badge-good', '🏆 勝利！', playerJp + ' で詰みました。お見事です。', null);
+      status(goteInCheck ? '🏆 詰みです。あなたの勝ちです！' : '相手に指す手がありません。あなたの勝ちです！');
+      return;
     }
 
-    function getRawPieceMoves(b, r, c) {
-      const piece = b[r][c]; if (!piece) return [];
-      const color = piece.color, fwd = color === 0 ? -1 : 1, moves = [];
-      function add(nr, nc) { if (nr < 0 || nr > 8 || nc < 0 || nc > 8) return false; const target = b[nr][nc]; if (!target) { moves.push({ r: nr, c: nc }); return true; } if (target.color !== color) moves.push({ r: nr, c: nc }); return false; }
-      function slide(dr, dc) { let nr = r + dr; let nc = c + dc; while (add(nr, nc)) { nr += dr; nc += dc; } }
-      const type = piece.type;
-      if (type === 'FU') add(r + fwd, c);
-      else if (type === 'KY') slide(fwd, 0);
-      else if (type === 'KE') { add(r + fwd * 2, c - 1); add(r + fwd * 2, c + 1); }
-      else if (type === 'GI') { add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1); add(r - fwd, c - 1); add(r - fwd, c + 1); }
-      else if (type === 'KI' || type === 'TO' || type === 'NY' || type === 'NK' || type === 'NG') { add(r + fwd, c - 1); add(r + fwd, c); add(r + fwd, c + 1); add(r, c - 1); add(r, c + 1); add(r - fwd, c); }
-      else if (type === 'KA') { slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1); }
-      else if (type === 'HI') { slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1); }
-      else if (type === 'UM') { slide(-1, -1); slide(-1, 1); slide(1, -1); slide(1, 1); add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1); }
-      else if (type === 'RY') { slide(-1, 0); slide(1, 0); slide(0, -1); slide(0, 1); add(r - 1, c - 1); add(r - 1, c + 1); add(r + 1, c - 1); add(r + 1, c + 1); }
-      else if (type === 'OU') { for (let dr = -1; dr <= 1; dr++) { for (let dc = -1; dc <= 1; dc++) { if (dr !== 0 || dc !== 0) add(r + dr, c + dc); } } }
-      return moves;
+    var isBlunder = (assist !== 'off') && !isBook && (loss >= threshold) && post.move;
+
+    if (isBlunder) {
+      pendingPunish = post.move;
+      snapshot();
+      applyMoveToState(m);
+      refreshLegal();
+      render();
+      document.getElementById('brake-score-badge').textContent = '評価値落差 −' + Math.round(Math.min(loss, 99999)) + '点';
+      document.getElementById('brake-msg').textContent =
+        '【' + (ASSIST_NAMES[assist] || '') + '基準】この手だと ' + formatJp(post.move, false) + ' の反撃が厳しく、形勢を損ねます。';
+      document.getElementById('brake-modal').style.display = 'block';
+      setCoach('badge-bad', '⚠️ 悪手警告', 'AIの最善手は ' + bestJp + ' でした。' + explain(m, bookEntry, isBook),
+               pre.pv, true);
+      status('悪手ブレーキが作動しました');
+      return;
     }
-    initGame();
-  </script>
+
+    if (isBook) {
+      setCoach('badge-good', '🌟 定跡手！', playerJp + ' は定跡です。' + (bookEntry ? bookEntry.comment : ''), pre.pv, true);
+    } else if ((recommended && m === recommended) || loss <= 35) {
+      setCoach('badge-good', '🌟 好手！', playerJp + ' はAI第一推奨クラスの一手です。' + explain(m, bookEntry, false), pre.pv, true);
+    } else if (loss <= 130) {
+      setCoach('badge-ok', '👍 合格手', playerJp + ' は手堅い一手です。（AI最善手は ' + bestJp + '）', pre.pv, true);
+    } else {
+      setCoach('badge-warn', '⚡ 緩手（少し疑問）', playerJp + ' で少し形勢を損ねました。AIは ' + bestJp + ' を推奨していました。', pre.pv, true);
+    }
+
+    snapshot();
+    applyMoveToState(m);
+    refreshLegal();
+    render();
+    playCpuMove(post, cfg);
+  }
+
+  function explain(m, bookEntry, isBook) {
+    if (isBook && bookEntry) return bookEntry.comment;
+    var d = SG.decode(m);
+    if (d.capType) return '相手の ' + (KANJI[d.capType] || '駒') + ' を取る手です。';
+    if (d.promote) return '敵陣で ' + (KANJI[d.pieceType] || '駒') + ' を成り、駒の働きを高めました。';
+    if (d.drop) return '持ち駒の ' + KANJI[d.drop] + ' を要所に打ち込みました。';
+    return '自然な一手です。';
+  }
+
+  function pickCpuMove(post, cfg) {
+    var roots = post.roots || [];
+    if (!roots.length) return post.move;
+    if (cfg.blunderRate > 0 && Math.random() < cfg.blunderRate) {
+      return roots[Math.floor(Math.random() * roots.length)][0];
+    }
+    if (cfg.margin <= 0) return roots[0][0];
+    var best = roots[0][1], cands = [];
+    for (var i = 0; i < roots.length; i++) if (roots[i][1] >= best - cfg.margin) cands.push(roots[i][0]);
+    if (!cands.length) return roots[0][0];
+    return cands[Math.floor(Math.random() * cands.length)];
+  }
+
+  function playCpuMove(post, cfg) {
+    busy = true;
+    status('相手（CPU）が指しています…');
+    var bookKey = usiHistory.join(' ');
+    var bookEntry = OPENING_BOOK[bookKey];
+    var chosen = 0;
+    if (bookEntry) {
+      for (var i = 0; i < legalList.length; i++) {
+        if (legalList[i].usi === bookEntry.move) { chosen = legalList[i].raw; break; }
+      }
+    }
+    if (!chosen) chosen = pickCpuMove(post, cfg);
+    if (!chosen && legalList.length) chosen = legalList[0].raw;
+    if (!chosen) {
+      gameOver = true; busy = false;
+      syncEngine();
+      status(SG.inCheck(1) ? '🏆 詰みです。あなたの勝ちです！' : '相手に指す手がありません。あなたの勝ちです！');
+      return;
+    }
+    setTimeout(function () {
+      applyMoveToState(chosen);
+      refreshLegal();
+      pendingPunish = 0;
+      render();
+      if (legalList.length === 0) {
+        gameOver = true; busy = false;
+        syncEngine();
+        status(SG.inCheck(0) ? '詰みです……あなたの負けです。' : '指す手がありません（引き分け）。');
+        setCoach('badge-bad', '対局終了', '詰まされてしまいました。「初手から」でもう一局どうぞ。', null);
+        return;
+      }
+      busy = false;
+      syncEngine();
+      status(SG.inCheck(0) ? '⚠️ 王手されています！' : 'あなたの番です');
+    }, 260);
+  }
+
+  /* ---------------- モーダル操作 ---------------- */
+  window.showWhyBlunder = function () {
+    document.getElementById('brake-modal').style.display = 'none';
+    if (!pendingPunish) { window.undoMove(); return; }
+    busy = true;
+    var d = SG.decode(pendingPunish);
+    render(d.from >= 0 ? { r: d.fromR, c: d.fromC } : null, { r: d.toR, c: d.toC });
+    status('⚠️ 相手の反撃手順を再生します…');
+    var punish = pendingPunish;
+    setTimeout(function () {
+      syncEngine();
+      SG.playMove(punish);
+      SG.exportState(G);
+      var dd = SG.decode(punish);
+      lastMove = { fromR: dd.fromR, fromC: dd.fromC, toR: dd.toR, toC: dd.toC };
+      targets = [];
+      render();
+      status('💥 ' + formatJp(punish, false) + ' と反撃されてしまいます！');
+      setTimeout(function () {
+        window.undoMove();
+        status('手を巻き戻しました。安全な手を選び直しましょう。');
+      }, 2000);
+    }, 900);
+  };
+
+  window.undoMove = function () {
+    document.getElementById('brake-modal').style.display = 'none';
+    if (restoreSnapshot()) {
+      selFrom = -1; selDrop = 0; targets = [];
+      pendingPunish = 0;
+      refreshLegal();
+      render();
+    }
+    busy = false;
+  };
+
+  window.continueMove = function () {
+    document.getElementById('brake-modal').style.display = 'none';
+    var level = parseInt(document.getElementById('cpu-level').value, 10) || 3;
+    var cfg = LEVELS[level] || LEVELS[3];
+    status('そのまま続行します。');
+    if (pendingPunish) {
+      var post = { move: pendingPunish, roots: [[pendingPunish, 0]] };
+      pendingPunish = 0;
+      playCpuMove(post, { margin: 0, blunderRate: 0, time: cfg.time });
+    } else {
+      busy = true;
+      engineThink(G.bd, G.hd, G.side, histKeys, { time: cfg.time, maxDepth: 30 })
+        .then(function (post) { playCpuMove(post, cfg); });
+    }
+  };
+
+  window.undoSingleMove = function () {
+    if (busy || !undoStack.length) return;
+    window.undoMove();
+    status('1手前の局面に戻しました');
+  };
+
+  window.confirmReset = function () {
+    if (confirm('対局をリセットして初手からやり直しますか？')) newGame();
+  };
+
+  /* ---------------- 初期化 ---------------- */
+  function newGame() {
+    SG.initialPosition();
+    SG.exportState(G);
+    histKeys = []; usiHistory = []; undoStack = [];
+    selFrom = -1; selDrop = 0; targets = [];
+    busy = false; lastMove = null; pendingPunish = 0; pendingPromo = null;
+    currentEval = 0; gameOver = false;
+    if (worker) worker.postMessage({ cmd: 'reset' });
+    SG.clearTT();
+    document.getElementById('brake-modal').style.display = 'none';
+    document.getElementById('promote-modal').style.display = 'none';
+    setCoach('badge-ok', '対局開始', '対局を始めると、あなたの手とAIの最善手の解説がここに表示されます。', null);
+    setEngineInfo(null);
+    refreshLegal();
+    render();
+    status('対局開始。あなたの手番です');
+  }
+
+  window.addEventListener('load', function () {
+    buildBoardDOM();
+    initWorker();
+    newGame();
+  });
+})();
+    </script>
 </body>
 </html>
